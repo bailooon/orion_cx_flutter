@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Orion CX - prévia das telas</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #eef0f3; font-family: Arial, Helvetica, sans-serif; color: #17171b; }
+  .page { width: 1920px; min-height: 1200px; padding: 42px 48px 54px; }
+  .top { display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:28px; }
+  .top h1 { margin:0; font-size:40px; letter-spacing:-1px; }
+  .top p { margin:7px 0 0; color:#62636b; font-size:17px; }
+  .badge { padding:10px 14px; border-radius:999px; background:#fff; border:1px solid #dfe1e6; font-size:13px; font-weight:700; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+  .frame { height:510px; background:#fff; border:1px solid #dfe1e6; border-radius:25px; overflow:hidden; box-shadow:0 16px 45px rgba(0,0,0,.08); }
+  .caption { height:44px; background:#17171b; color:#fff; display:flex; align-items:center; justify-content:space-between; padding:0 18px; font-size:13px; font-weight:800; }
+  .screen { height:466px; background:#f5f6f8; }
+  .appbar { height:58px; background:#fff; border-bottom:1px solid #e1e2e6; display:flex; align-items:center; justify-content:space-between; padding:0 18px; }
+  .brand { display:flex; align-items:center; font-weight:900; letter-spacing:.6px; }
+  .logo { width:32px; height:32px; border-radius:50%; background:#e30613; margin-right:9px; position:relative; }
+  .logo:after { content:'✦'; color:#fff; position:absolute; inset:0; display:grid; place-items:center; font-size:15px; }
+  .iconset { display:flex; gap:9px; }
+  .icon { width:30px; height:30px; border-radius:10px; background:#f1f2f4; }
+  .content { padding:18px; }
+  .hero { background:linear-gradient(135deg,#e30613,#ad000c); color:#fff; border-radius:20px; padding:21px; display:flex; justify-content:space-between; }
+  .hero h2 { margin:5px 0 8px; font-size:26px; letter-spacing:-.6px; }
+  .hero p { margin:0; color:rgba(255,255,255,.76); max-width:430px; line-height:1.45; font-size:13px; }
+  .button { display:inline-block; margin-top:15px; background:#fff; color:#e30613; font-weight:800; padding:10px 14px; border-radius:12px; font-size:12px; }
+  .sync { width:170px; padding:14px; border:1px solid rgba(255,255,255,.25); background:rgba(255,255,255,.1); border-radius:16px; font-size:12px; line-height:1.45; }
+  .section-title { font-size:17px; font-weight:900; margin:18px 0 10px; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .card { background:#fff; border:1px solid #e1e2e6; border-radius:16px; padding:14px; }
+  .card-row { display:flex; gap:12px; }
+  .card-icon { width:42px; height:42px; border-radius:13px; background:#e9f1fb; flex:none; }
+  .card h3 { font-size:14px; margin:1px 0 5px; }
+  .card p { color:#62636b; font-size:11px; line-height:1.4; margin:0; }
+  .session { display:flex; justify-content:space-between; align-items:center; }
+  .pill { display:inline-block; border-radius:999px; padding:6px 9px; font-size:10px; font-weight:800; background:#fff1dd; color:#a65a00; }
+  .chat-layout { height:408px; padding:13px; display:grid; grid-template-columns:1fr 250px; gap:12px; }
+  .panel { background:#fff; border:1px solid #e1e2e6; border-radius:17px; overflow:hidden; }
+  .panel-head { height:52px; border-bottom:1px solid #e1e2e6; display:flex; align-items:center; justify-content:space-between; padding:0 13px; }
+  .small { color:#62636b; font-size:10px; }
+  .messages { height:255px; padding:12px; overflow:hidden; }
+  .bubble { max-width:76%; padding:10px 12px; border-radius:15px; font-size:11px; line-height:1.4; margin-bottom:9px; border:1px solid #e1e2e6; }
+  .bot { background:#fff; border-bottom-left-radius:4px; }
+  .me { background:#e30613; color:#fff; border-color:#e30613; margin-left:auto; border-bottom-right-radius:4px; }
+  .system { margin:7px auto; max-width:86%; background:#f5f6f8; text-align:center; color:#62636b; border-radius:999px; font-size:10px; }
+  .action { margin:0 11px 8px; padding:10px; background:#f3efff; border:1px solid #dcd0ff; border-radius:13px; font-size:11px; }
+  .composer { height:55px; border-top:1px solid #e1e2e6; padding:8px; display:flex; gap:8px; }
+  .input { flex:1; border:1px solid #dfe1e6; border-radius:12px; background:#fff; }
+  .send { width:39px; border-radius:12px; background:#e30613; }
+  .side-card { padding:15px; }
+  .side-card h3 { margin:0 0 12px; font-size:15px; }
+  .kv { display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid #eef0f3; font-size:10px; }
+  .bar { height:7px; background:#e4e5e8; border-radius:99px; margin-top:8px; overflow:hidden; }
+  .bar span { display:block; width:94%; height:100%; background:#16794c; }
+  .admin { display:grid; grid-template-columns:72px 1fr; height:408px; }
+  .rail { background:#fff; border-right:1px solid #e1e2e6; padding:16px 12px; display:flex; flex-direction:column; gap:13px; align-items:center; }
+  .rail .r { width:42px; height:42px; border-radius:13px; background:#f1f2f4; }
+  .rail .active { background:#ffdadd; }
+  .admin-main { padding:14px; }
+  .admin-title { display:flex; justify-content:space-between; align-items:flex-start; }
+  .admin-title h2 { margin:0; font-size:22px; }
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:9px; margin:12px 0; }
+  .metric { background:#fff; border:1px solid #e1e2e6; border-radius:14px; padding:10px; }
+  .metric b { display:block; font-size:19px; }
+  .metric span { color:#62636b; font-size:9px; }
+  .alert { padding:9px 11px; border-radius:12px; background:#fff3e7; border:1px solid #ffd4aa; color:#a65a00; font-size:10px; font-weight:800; }
+  .split { display:grid; grid-template-columns:310px 1fr; gap:10px; height:239px; margin-top:10px; }
+  .list { background:#fff; border:1px solid #e1e2e6; border-radius:15px; padding:9px; overflow:hidden; }
+  .case { border:1px solid #e1e2e6; border-radius:13px; padding:10px; margin-bottom:8px; }
+  .case.selected { background:#fff6f7; border-color:#ffb8be; }
+  .case-row { display:flex; justify-content:space-between; align-items:center; font-size:11px; }
+  .avatar { width:30px; height:30px; border-radius:50%; background:#edeef2; display:grid; place-items:center; font-size:9px; font-weight:900; }
+  .summary { color:#62636b; font-size:9px; margin-top:7px; line-height:1.35; }
+  .workspace { background:#fff; border:1px solid #e1e2e6; border-radius:15px; overflow:hidden; display:grid; grid-template-columns:1fr 210px; }
+  .conversation { display:flex; flex-direction:column; }
+  .workspace-head { height:44px; border-bottom:1px solid #e1e2e6; display:flex; align-items:center; justify-content:space-between; padding:0 10px; font-size:11px; font-weight:800; }
+  .ai-summary { padding:8px 10px; background:#f8f5ff; color:#5d3ca8; font-size:9px; line-height:1.35; }
+  .work-msgs { flex:1; padding:9px; }
+  .work-side { border-left:1px solid #e1e2e6; padding:11px; font-size:9px; }
+  .work-side h3 { margin:0 0 8px; font-size:12px; }
+  .confidence { color:#e30613; font-weight:900; }
+  .footer-note { margin-top:22px; color:#62636b; font-size:12px; text-align:right; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <div><h1>Orion CX - prévia visual</h1><p>Telas funcionais mapeadas a partir dos fluxos conversacional e administrativo.</p></div>
+    <div class="badge">Flutter • Material 3 • Responsivo</div>
+  </div>
+  <div class="grid">
+    <div class="frame">
+      <div class="caption"><span>01 • Área do cliente</span><span>Início</span></div>
+      <div class="screen">
+        <div class="appbar"><div class="brand"><span class="logo"></span>ORION CX</div><div class="iconset"><div class="icon"></div><div class="icon"></div></div></div>
+        <div class="content">
+          <div class="hero"><div><div style="font-size:11px;opacity:.75">Olá, Cliente Demo</div><h2>Como podemos ajudar hoje?</h2><p>Comece pelo assunto e o Orion mantém o contexto durante toda a jornada.</p><span class="button">Abrir atendimento</span></div><div class="sync"><b>Contexto sincronizado</b><br><br>App, Web e WhatsApp podem continuar a mesma sessão.</div></div>
+          <div class="section-title">Atalhos de atendimento</div>
+          <div class="cards"><div class="card card-row"><div class="card-icon"></div><div><h3>Internet lenta</h3><p>Análise automática, confirmação e reinício simulado do sinal.</p></div></div><div class="card card-row"><div class="card-icon" style="background:#fff1dd"></div><div><h3>Cobrança indevida</h3><p>Baixa confiança e transferência para atendente.</p></div></div></div>
+          <div class="section-title">Sessão atual</div>
+          <div class="card session"><div><b style="font-size:13px">CX-2026-0142</b><div class="small" style="margin-top:5px">Aguardando a primeira solicitação do cliente.</div></div><span class="pill">Automático</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="caption"><span>02 • Área do cliente</span><span>Chat e continuidade</span></div>
+      <div class="screen">
+        <div class="appbar"><div class="brand"><span class="logo"></span>ORION CX</div><div class="badge" style="padding:6px 10px">App • Web • WhatsApp</div></div>
+        <div class="chat-layout">
+          <div class="panel">
+            <div class="panel-head"><div><b style="font-size:12px">Atendimento Orion</b><div class="small">CX-2026-0142 • Web Portal</div></div><span class="pill" style="background:#eaf1fb;color:#1a5fb4">Automático</span></div>
+            <div class="messages"><div class="bubble bot">Olá! Como posso ajudar com sua internet ou sua fatura?</div><div class="bubble me">Minha internet está lenta.</div><div class="bubble bot">Entendi. Posso reiniciar o sinal da sua conexão agora?</div><div class="bubble system">Sessão recuperada do App Claro no Web Portal</div><div class="bubble bot">Encontrei uma ação pendente. Quer continuar por aqui?</div></div>
+            <div class="action"><b>Ação pendente recuperada</b><br>Continuar aqui &nbsp; • &nbsp; Cancelar ação</div>
+            <div class="composer"><div class="input"></div><div class="send"></div></div>
+          </div>
+          <div class="panel side-card"><h3>Contexto da sessão</h3><div class="kv"><span>Protocolo</span><b>CX-2026-0142</b></div><div class="kv"><span>Canal</span><b>Web Portal</b></div><div class="kv"><span>Intenção</span><b>SUPORTE_TECNICO</b></div><div class="small" style="margin-top:13px">Confiança da intenção <b style="float:right;color:#16794c">94%</b></div><div class="bar"><span></span></div><h3 style="margin-top:18px">Resumo da IA</h3><p class="small" style="line-height:1.5">Cliente relata lentidão. A ação sugerida é reiniciar o sinal, mantendo a sessão entre canais.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="caption"><span>03 • Interface administrativa</span><span>Fila em tempo real</span></div>
+      <div class="screen">
+        <div class="appbar"><div class="brand"><span class="logo"></span>ORION CX</div><div class="badge" style="padding:6px 10px">Atendente conectado</div></div>
+        <div class="admin"><div class="rail"><div class="logo" style="margin:0"></div><div class="r active"></div><div class="r"></div><div class="r"></div></div><div class="admin-main"><div class="admin-title"><div><h2>Fila de atendimento</h2><div class="small">Eventos de baixa confiança aguardando uma pessoa atendente.</div></div><span class="pill" style="background:#e8f6ef;color:#16794c">Tempo real</span></div><div class="metrics"><div class="metric"><b>2</b><span>Na fila</span></div><div class="metric"><b>1</b><span>Em atendimento</span></div><div class="metric"><b>1</b><span>Concluídos</span></div><div class="metric"><b>2</b><span>Eventos não lidos</span></div></div><div class="alert">2 novos clientes na fila • REQUIRED_HUMAN_ASSISTANCE</div><div class="split"><div class="list"><div class="case selected"><div class="case-row"><div style="display:flex;gap:8px;align-items:center"><div class="avatar">MF</div><b>Maria Ferreira</b></div><span class="small">4 min</span></div><div class="summary">Quero reclamar de uma cobrança indevida na minha fatura.</div><div style="margin-top:7px"><span class="pill">45% confiança</span></div></div><div class="case"><div class="case-row"><div style="display:flex;gap:8px;align-items:center"><div class="avatar">CD</div><b>Cliente Demo</b></div><span class="small">agora</span></div><div class="summary">Contestação de cobrança enviada pelo App Claro.</div></div></div><div class="workspace"><div class="conversation"><div class="workspace-head"><span>Maria Ferreira • CX-2026-0139</span><span class="button" style="margin:0;padding:7px 10px;background:#e30613;color:#fff">Assumir</span></div><div class="ai-summary"><b>Resumo da IA:</b> cobrança contestada, confiança de 45%, histórico pronto para o atendente.</div><div class="work-msgs"><div class="bubble me" style="font-size:9px">Quero reclamar de uma cobrança indevida.</div><div class="bubble bot" style="font-size:9px">Vou transferir para uma pessoa especialista.</div><div class="bubble system" style="font-size:8px">REQUIRED_HUMAN_ASSISTANCE</div></div></div><div class="work-side"><h3>Contexto</h3><div class="kv"><span>Intenção</span><b>FATURA</b></div><div class="kv"><span>Canal</span><b>App</b></div><p class="confidence">45% confiança</p><p style="line-height:1.4;color:#62636b">O caso requer atendimento humano.</p></div></div></div></div></div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="caption"><span>04 • Interface administrativa</span><span>Workspace do atendente</span></div>
+      <div class="screen">
+        <div class="appbar"><div class="brand"><span class="logo"></span>ORION CX</div><div class="iconset"><div class="icon"></div><div class="icon"></div></div></div>
+        <div style="padding:14px;height:408px"><div class="panel" style="height:100%;display:grid;grid-template-columns:1fr 270px"><div class="conversation"><div class="workspace-head" style="height:54px"><div style="display:flex;align-items:center;gap:9px"><div class="avatar">MF</div><div>Maria Ferreira<div class="small">CX-2026-0139 • App Claro</div></div></div><span class="button" style="margin:0;padding:8px 11px;background:#fff;color:#17171b;border:1px solid #dfe1e6">Concluir</span></div><div class="ai-summary" style="padding:10px 13px"><b>Resumo da IA:</b> cliente contesta uma cobrança. A sessão foi classificada com baixa confiança e transferida.</div><div class="messages" style="height:245px"><div class="bubble me">Quero reclamar de uma cobrança indevida.</div><div class="bubble bot">Olá, Maria. Vou verificar a origem desta cobrança e explicar os próximos passos.</div><div class="bubble me">Obrigada, fico no aguardo.</div></div><div class="composer"><div class="input"></div><div class="send"></div></div></div><div class="side-card" style="border-left:1px solid #e1e2e6"><h3>Contexto do cliente</h3><div class="kv"><span>Documento</span><b>***.207.***-**</b></div><div class="kv"><span>Plano</span><b>Controle 25 GB</b></div><div class="kv"><span>Intenção</span><b>CONTESTACAO_FATURA</b></div><div class="small" style="margin-top:13px">Confiança <b style="float:right;color:#e30613">45%</b></div><div class="bar"><span style="width:45%;background:#e30613"></span></div><h3 style="margin-top:17px">Linha do atendimento</h3><p class="small">✓ Mensagem recebida</p><p class="small">✓ Intenção analisada</p><p class="small">✓ Atendimento humano</p></div></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="footer-note">Prévia ilustrativa. O comportamento funcional está implementado no projeto Flutter.</div>
+</div>
+</body>
+</html>

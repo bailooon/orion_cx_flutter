@@ -1,0 +1,18 @@
+name: orion_cx
+version: 1.0.0+1
+publish_to: 'none'
+description: Protótipo funcional em Flutter para os fluxos conversacionais Orion CX.
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

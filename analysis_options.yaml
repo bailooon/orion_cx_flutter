@@ -1,0 +1,12 @@
+analyzer:
+  exclude:
+    - build/**
+  errors:
+    unused_import: error
+    unused_local_variable: error
+
+linter:
+  rules:
+    avoid_print: true
+    cancel_subscriptions: true
+    close_sinks: true
