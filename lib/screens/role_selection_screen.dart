@@ -90,7 +90,7 @@ class _HeroPanel extends StatelessWidget {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.08),
+                      color: Colors.white.withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(color: Colors.white24),
                     ),
@@ -390,7 +390,7 @@ class _DarkFeature extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.07),
+        color: Colors.white.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.white12),
       ),
@@ -419,10 +419,10 @@ class _ArchitecturePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final Paint linePaint = Paint()
-      ..color = Colors.white.withOpacity(0.055)
+      ..color = Colors.white.withValues(alpha: 0.055)
       ..strokeWidth = 1;
     final Paint nodePaint = Paint()
-      ..color = AppColors.claroRed.withOpacity(0.32)
+      ..color = AppColors.claroRed.withValues(alpha: 0.32)
       ..style = PaintingStyle.fill;
 
     final List<Offset> nodes = <Offset>[
@@ -450,7 +450,7 @@ class _ArchitecturePainter extends CustomPainter {
         node,
         11,
         Paint()
-          ..color = Colors.white.withOpacity(0.035)
+          ..color = Colors.white.withValues(alpha: 0.035)
           ..style = PaintingStyle.fill,
       );
     }

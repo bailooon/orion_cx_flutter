@@ -66,6 +66,16 @@ class ChatMessage {
     required this.channel,
   });
 
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    return ChatMessage(
+      id: json['id'] as String,
+      actor: ConversationActor.values.byName(json['actor'] as String),
+      text: json['text'] as String,
+      sentAt: DateTime.parse(json['sentAt'] as String),
+      channel: UserChannel.values.byName(json['channel'] as String),
+    );
+  }
+
   final String id;
   final ConversationActor actor;
   final String text;
@@ -90,6 +100,28 @@ class SupportCase {
     this.assignedAgent,
     this.hasUnreadEvent = false,
   });
+
+  factory SupportCase.fromJson(Map<String, dynamic> json) {
+    return SupportCase(
+      id: json['id'] as String,
+      customerName: json['customerName'] as String,
+      customerDocument: json['customerDocument'] as String,
+      planName: json['planName'] as String,
+      intent: json['intent'] as String,
+      intentConfidence: (json['intentConfidence'] as num).toDouble(),
+      summary: json['summary'] as String,
+      status: SupportCaseStatus.values.byName(json['status'] as String),
+      createdAt: DateTime.parse(json['createdAt'] as String),
+      updatedAt: DateTime.parse(json['updatedAt'] as String),
+      messages: (json['messages'] as List<dynamic>)
+          .map((dynamic item) =>
+              ChatMessage.fromJson(item as Map<String, dynamic>))
+          .toList(),
+      pendingAction: json['pendingAction'] as String?,
+      assignedAgent: json['assignedAgent'] as String?,
+      hasUnreadEvent: json['hasUnreadEvent'] as bool? ?? false,
+    );
+  }
 
   final String id;
   final String customerName;

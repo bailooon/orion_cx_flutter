@@ -1232,7 +1232,7 @@ class _TimelineItem extends StatelessWidget {
             height: 31,
             decoration: BoxDecoration(
               color: done
-                  ? AppColors.success.withOpacity(0.10)
+                  ? AppColors.success.withValues(alpha: 0.10)
                   : AppColors.canvas,
               shape: BoxShape.circle,
             ),
@@ -1523,7 +1523,7 @@ class _ArchitectureNode extends StatelessWidget {
             width: 43,
             height: 43,
             decoration: BoxDecoration(
-              color: accent.withOpacity(0.10),
+              color: accent.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(14),
             ),
             child: Icon(icon, color: accent),
@@ -1727,7 +1727,7 @@ class _EventRow extends StatelessWidget {
           width: 39,
           height: 39,
           decoration: BoxDecoration(
-            color: accent.withOpacity(0.10),
+            color: accent.withValues(alpha: 0.10),
             shape: BoxShape.circle,
           ),
           child: Icon(icon, color: accent, size: 19),
