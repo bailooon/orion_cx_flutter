@@ -1,7 +1,7 @@
 name: orion_cx
 version: 1.0.0+1
 publish_to: 'none'
-description: Protótipo funcional em Flutter para os fluxos conversacionais Orion CX.
+description: Frontend Flutter Web da plataforma Orion CX — canais do cliente e dashboard do atendente.
 
 environment:
   sdk: '>=3.2.0 <4.0.0'

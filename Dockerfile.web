@@ -1,0 +1,28 @@
+# Build stage: compile the Flutter app to a static web bundle ------------------
+FROM ghcr.io/cirruslabs/flutter:3.24.5 AS build
+
+# The API base URLs are compile-time constants in the Flutter app
+# (String.fromEnvironment), so they are passed as build args here.
+ARG ORION_API_URL=http://localhost:8000
+ARG ORION_WS_URL=ws://localhost:8000/ws
+
+WORKDIR /app
+
+# Resolve dependencies before copying the source, so editing Dart files does
+# not re-download the package cache.
+COPY pubspec.yaml pubspec.lock ./
+RUN flutter pub get
+
+COPY . .
+
+RUN flutter build web --release \
+    --dart-define=ORION_API_URL=${ORION_API_URL} \
+    --dart-define=ORION_WS_URL=${ORION_WS_URL}
+
+# Runtime stage: serve the bundle ---------------------------------------------
+FROM nginx:1.27-alpine
+
+COPY --from=build /app/build/web /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80

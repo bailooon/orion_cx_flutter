@@ -1,3 +1,9 @@
+> **Documento histórico (v0).** Esta é a análise feita sobre o documento de visão do projeto, quando o protótipo ainda era uma simulação em memória dentro do Flutter. Ela continua útil como registro da leitura dos requisitos e da derivação das telas.
+>
+> A arquitetura **em vigor** — com os cinco microsserviços em Go, PostgreSQL, Redis, Redpanda e o gateway como entrada única — está em [ARQUITETURA.md](../ARQUITETURA.md). O mapeamento de requisitos está em [FUNCIONALIDADES.md](../FUNCIONALIDADES.md).
+>
+> Em particular, as afirmações da seção 4 sobre "mocks locais" e "OrionController como simulação do Gateway" **não valem mais**: o ORION Gateway existe de fato e os dados passam por banco.
+
 # Análise do documento e mapeamento para as telas
 
 ## 1. Requisitos identificados no documento
