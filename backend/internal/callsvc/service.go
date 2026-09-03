@@ -138,21 +138,40 @@ func (s *Service) Reset(ctx context.Context, id string) (domain.Conversation, er
 	return conversation, nil
 }
 
-// Assign hands a queued conversation to a human agent (flow B, step 5).
+// Assign hands a conversation to a human agent.
+//
+// Two entry points lead here: the queue built by a low-confidence handoff
+// (flow B, step 5), and an agent choosing to step into a conversation the
+// assistant is still handling. The second case matters because an agent
+// watching a live conversation go wrong should be able to intervene instead of
+// waiting for the customer to get frustrated enough to trigger a handoff.
 func (s *Service) Assign(ctx context.Context, id, agentName string) (domain.Conversation, error) {
 	current, err := s.repo.GetConversation(ctx, id)
 	if err != nil {
 		return domain.Conversation{}, err
 	}
-	if current.Status != domain.StatusWaitingHuman {
-		return domain.Conversation{}, httpx.Conflict("Este atendimento não está aguardando um atendente.")
+	switch current.Status {
+	case domain.StatusWaitingHuman, domain.StatusBot:
+		// Assignable.
+	case domain.StatusInProgress:
+		return domain.Conversation{}, httpx.Conflict("Este atendimento já está com um atendente.")
+	default:
+		return domain.Conversation{}, httpx.Conflict("Este atendimento já foi concluído.")
 	}
+
+	// The customer sees a different sentence depending on where the agent came
+	// from: a handoff they were promised, or an unannounced intervention.
+	notice := agentName + " assumiu o atendimento."
+	if current.Status == domain.StatusBot {
+		notice = agentName + " entrou no atendimento e vai continuar a conversa a partir daqui."
+	}
+
 	status := domain.StatusInProgress
 	unread := false
 	conversation, err := s.repo.ApplyTurn(ctx, id, Turn{
 		Messages: []MessageInput{{
 			Actor:   domain.ActorSystem,
-			Text:    agentName + " assumiu o atendimento.",
+			Text:    notice,
 			Channel: current.LastChannel(),
 		}},
 		Status:           &status,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -119,13 +120,9 @@ func TestApplyTurnRejectsInvalidMessages(t *testing.T) {
 	}
 }
 
-func TestAssignRequiresAQueuedConversation(t *testing.T) {
+func TestAssignFromTheQueue(t *testing.T) {
 	service, ctx := newTestService(t)
 	conversation := openTestConversation(t, service, ctx)
-
-	if _, err := service.Assign(ctx, conversation.ID, "Camila Rocha"); err == nil {
-		t.Fatal("an automated conversation must not be assignable")
-	}
 
 	status := domain.StatusWaitingHuman
 	if _, err := service.ApplyTurn(ctx, conversation.ID, Turn{
@@ -147,6 +144,66 @@ func TestAssignRequiresAQueuedConversation(t *testing.T) {
 	}
 	if assigned.HasUnreadEvent {
 		t.Fatal("taking a case must clear its unread badge")
+	}
+}
+
+// TestAgentCanInterveneInAutomatedConversation covers the agent stepping into a
+// conversation the assistant is still handling, without waiting for a handoff.
+func TestAgentCanInterveneInAutomatedConversation(t *testing.T) {
+	service, ctx := newTestService(t)
+	conversation := openTestConversation(t, service, ctx)
+
+	// A live automated conversation, with a pending action on the table.
+	if _, err := service.ApplyTurn(ctx, conversation.ID, Turn{
+		Messages: []MessageInput{
+			{Actor: domain.ActorCustomer, Text: "minha internet está lenta", Channel: domain.ChannelWhatsApp},
+			{Actor: domain.ActorAssistant, Text: "Posso reiniciar o sinal?", Channel: domain.ChannelWhatsApp},
+		},
+		SetPendingAction: true,
+		PendingAction:    domain.ActionRestartSignal,
+	}); err != nil {
+		t.Fatalf("ApplyTurn: %v", err)
+	}
+
+	assigned, err := service.Assign(ctx, conversation.ID, "Camila Rocha")
+	if err != nil {
+		t.Fatalf("Assign from bot status: %v", err)
+	}
+	if assigned.Status != domain.StatusInProgress {
+		t.Fatalf("expected inProgress, got %s", assigned.Status)
+	}
+	if assigned.PendingAction != nil {
+		t.Fatal("taking over must drop the assistant's pending action")
+	}
+	// The whole history stays: that is the point of intervening instead of
+	// starting a new conversation.
+	if len(assigned.Messages) != 3 {
+		t.Fatalf("expected the history to be preserved, got %d messages", len(assigned.Messages))
+	}
+	last := assigned.Messages[len(assigned.Messages)-1]
+	if last.Actor != domain.ActorSystem || !strings.Contains(last.Text, "entrou no atendimento") {
+		t.Fatalf("expected an intervention notice in the history, got %+v", last)
+	}
+
+	// A second agent cannot take a conversation that is already assigned.
+	if _, err := service.Assign(ctx, conversation.ID, "Outro Atendente"); err == nil {
+		t.Fatal("a conversation already in progress must not be reassignable")
+	}
+}
+
+func TestResolvedConversationCannotBeAssigned(t *testing.T) {
+	service, ctx := newTestService(t)
+	conversation := openTestConversation(t, service, ctx)
+
+	status := domain.StatusResolved
+	if _, err := service.ApplyTurn(ctx, conversation.ID, Turn{
+		Messages: []MessageInput{{Actor: domain.ActorSystem, Text: "Concluído.", Channel: domain.ChannelApp}},
+		Status:   &status,
+	}); err != nil {
+		t.Fatalf("ApplyTurn: %v", err)
+	}
+	if _, err := service.Assign(ctx, conversation.ID, "Camila Rocha"); err == nil {
+		t.Fatal("a resolved conversation must not be assignable")
 	}
 }
 

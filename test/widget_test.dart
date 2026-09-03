@@ -73,6 +73,38 @@ void main() {
     expect(find.textContaining('REQUIRED_HUMAN_ASSISTANCE'), findsWidgets);
   });
 
+  testWidgets(
+      'atendente vê a conversa que ainda está com a IA, com as mensagens',
+      (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1440, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final _FakeOrionApi api = _FakeOrionApi(role: 'agent');
+    final OrionController controller = OrionController.withApi(api);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(OrionCxApp(controller: controller));
+    await tester.pump();
+    await tester.tap(find.text('Entrar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Entrar como atendente'));
+    await tester.pumpAndSettle();
+
+    // A conversation the assistant is still handling is not in the human
+    // queue, so it must have its own place on the dashboard.
+    expect(controller.botCases, isNotEmpty);
+
+    await tester.tap(find.text('Com a IA'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Conversas com a IA'), findsOneWidget);
+    expect(find.text('Cliente Demo'), findsWidgets);
+    // The agent can read the history without the customer being in the queue.
+    expect(find.textContaining('Eu sou o assistente Orion'), findsWidgets);
+    // And can step in instead of waiting for a handoff.
+    expect(find.text('Intervir'), findsWidgets);
+  });
+
   testWidgets('cliente vê os chamados, notificações e recomendações',
       (WidgetTester tester) async {
     await tester.binding.setSurfaceSize(const Size(1440, 900));

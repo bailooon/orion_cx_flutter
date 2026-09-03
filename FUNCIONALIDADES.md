@@ -144,6 +144,7 @@ App Claro, Web Portal e WhatsApp são **um canal declarado em cada requisição*
 
 **Por que assim:**
 - **Um único ponto de entrada.** É o papel do Amazon API Gateway na arquitetura-alvo e do ORION Gateway aqui. Autenticação, CORS, correlação de requisição e políticas ficam em um lugar só.
+- **O dashboard vê todos os atendimentos, não só a fila.** Conversas que o assistente está conduzindo sozinho aparecem na aba *Com a IA*, com o histórico completo. O atendente pode **intervir** numa delas em vez de esperar o cliente se frustrar até disparar um transbordo — a conversa é preservada, a ação pendente do assistente é descartada e o cliente recebe um aviso de que uma pessoa entrou.
 - **Canal validado no domínio.** Um canal desconhecido é rejeitado com 400 em vez de gravar lixo no histórico.
 - **O frontend simula os três canais** com um seletor, para que a troca de canal seja demonstrável em uma tela só — mas a troca é real: gera requisição, muda o registro no banco e reidrata o contexto.
 
@@ -271,6 +272,8 @@ Executar com `cd backend && go test ./...`:
 |---|---|
 | `TestFlowA_TechnicalSupportAcrossChannels` | Fluxo A inteiro: classificação confiante, ação pendente, troca de canal com recuperação de contexto, execução, histórico único cobrindo dois canais e chamado encerrado junto |
 | `TestFlowB_LowConfidenceHumanHandoff` | Fluxo B inteiro: confiança abaixo do limiar, transbordo, fila no dashboard, cliente barrado com 403, atribuição, resposta manual no canal de origem, encerramento e notificações |
+| `TestAgentCanInterveneInAutomatedConversation` | O atendente entra numa conversa que ainda está com a IA, o histórico é preservado e a ação pendente do assistente é descartada |
+| `TestResolvedConversationCannotBeAssigned` | Conversa concluída não volta para atendimento; conversa já atribuída não é reatribuída |
 | `TestDashboardReceivesHandoffInRealTime` | O dashboard recebe o transbordo pelo WebSocket, sem polling e sem recarregar, já com resumo da IA e confiança abaixo do limiar |
 | `TestWebSocketRequiresAValidToken` | O canal de tempo real não é uma porta sem autenticação: handshake sem token ou com token inválido devolve 401 |
 | `TestCustomerSocketOnlySeesOwnConversations` | Um socket de cliente nunca recebe a conversa de outro cliente |

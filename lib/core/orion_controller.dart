@@ -207,6 +207,20 @@ class OrionController extends ChangeNotifier {
     return result;
   }
 
+  /// Conversations the assistant is still handling on its own.
+  ///
+  /// They are not in the human queue, but the dashboard shows them so an agent
+  /// can watch a live conversation and step in before it goes wrong. Newest
+  /// activity first: an agent scanning this list cares about what is moving.
+  List<SupportCase> get botCases {
+    final List<SupportCase> result = _casesById.values
+        .where((SupportCase item) => item.status == SupportCaseStatus.bot)
+        .toList();
+    result.sort((SupportCase a, SupportCase b) =>
+        b.updatedAt.compareTo(a.updatedAt));
+    return result;
+  }
+
   List<SupportCase> get activeCases => _casesById.values
       .where((SupportCase item) => item.status == SupportCaseStatus.inProgress)
       .toList();
@@ -434,9 +448,13 @@ class OrionController extends ChangeNotifier {
 
   // --- agent actions ---------------------------------------------------------
 
+  /// Assigns a conversation to the signed-in agent. Works both for the human
+  /// queue and for a conversation the assistant is still handling, which is
+  /// how an agent intervenes proactively.
   Future<void> takeCase(String caseId, {String agentName = ''}) async {
     final SupportCase item = caseById(caseId);
-    if (item.status != SupportCaseStatus.waitingHuman) {
+    if (item.status != SupportCaseStatus.waitingHuman &&
+        item.status != SupportCaseStatus.bot) {
       return;
     }
     try {
