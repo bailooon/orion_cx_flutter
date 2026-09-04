@@ -1,119 +1,205 @@
-# Orion CX — protótipo funcional em Flutter
+# Orion CX
 
-Aplicativo demonstrativo criado a partir do documento técnico **Sprint 2: Orion CX**. O projeto cobre as duas experiências descritas no material: a jornada conversacional do cliente e a interface administrativa usada no transbordo para atendimento humano.
+**Plataforma de atendimento conversacional unificado — Claro Brasil · Challenge FIAP 2026**
 
-## O que foi implementado
+Protótipo funcional que unifica App Claro, Web Portal e WhatsApp em uma única camada de orquestração: interpreta a intenção do cliente, mantém o contexto entre canais e transborda para um atendente humano quando a confiança da IA não é suficiente — sem o cliente perder o histórico.
 
-### Área do cliente
+```
+Cliente ─┬─ App Claro ──┐
+         ├─ Web Portal ─┼──► ORION Gateway ──► NLP · Auth · Call Mgmt · Notification
+         └─ WhatsApp ───┘         │                        │
+                                  └──► Redpanda (eventos) ─┴──► Dashboard do atendente
+```
 
-- Tela inicial com atalhos para os cenários de **internet lenta** e **contestação de cobrança**.
-- Chat conversacional com mensagens de cliente, Orion IA, atendente e eventos de sistema.
-- Classificação simulada de intenção:
-  - `SUPORTE_TECNICO` com 94% de confiança;
-  - `CONTESTACAO_FATURA` com 45% de confiança.
-- Confirmação funcional do reinício de sinal.
-- Continuidade entre **App Claro**, **Web Portal** e **WhatsApp**, incluindo recuperação de ação pendente.
-- Transferência para atendimento humano quando a confiança é baixa.
-- Tela de sessões e protocolos.
+| Entregável | Onde |
+|---|---|
+| Arquitetura, diagramas e decisões | [ARQUITETURA.md](ARQUITETURA.md) |
+| RF001–RF009 e RNF001–RNF008 mapeados ao código | [FUNCIONALIDADES.md](FUNCIONALIDADES.md) |
+| Backend (Go, 5 microsserviços) | [`backend/`](backend) |
+| Frontend (Flutter Web) | [`lib/`](lib) |
+| Topologia local | [`docker-compose.yml`](docker-compose.yml) |
 
-### Interface administrativa
+---
 
-- Dashboard responsivo com fila, atendimentos ativos, concluídos e eventos não lidos.
-- Alerta visual para `REQUIRED_HUMAN_ASSISTANCE`.
-- Fila de clientes atualizada pelo mesmo estado usado na área do cliente.
-- Ação de assumir atendimento.
-- Workspace do atendente com:
-  - histórico completo;
-  - resumo contextual da IA;
-  - intenção e nível de confiança;
-  - dados básicos do cliente;
-  - resposta manual;
-  - conclusão do atendimento.
-- Tela de monitoramento que representa os componentes da arquitetura descrita no documento: canais, API Gateway, cluster EKS, microsserviços Orion, Kafka e persistência AWS.
+## Pré-requisitos
 
-## Como testar os dois fluxos principais
+**Caminho completo (recomendado)**
+- Docker Desktop com Docker Compose v2
 
-### Fluxo 1 — internet lenta e continuidade de canal
+**Caminho sem Docker**
+- Go 1.25+ (backend)
+- Flutter 3.24+ (frontend)
 
-1. Entre em **Área do cliente**.
-2. Selecione **Internet lenta**.
-3. Antes de confirmar, altere o canal para **Web Portal**.
-4. O chat recuperará a ação pendente e perguntará se deseja continuar.
-5. Selecione **Continuar aqui** para executar o reinício simulado.
+Nenhuma chave de API é obrigatória. Sem `ANTHROPIC_API_KEY`, o motor de NLU roda o classificador determinístico por regras e **os dois fluxos de demonstração funcionam integralmente**.
 
-### Fluxo 2 — contestação de fatura e transbordo humano
+---
 
-1. Entre em **Área do cliente**.
-2. Selecione **Cobrança indevida**.
-3. O caso será classificado com 45% de confiança e entrará na fila humana.
-4. Volte à seleção de experiência e abra o **Dashboard administrativo**.
-5. Selecione o protocolo do cliente, clique em **Assumir** e envie uma resposta.
-6. Ao retornar à área do cliente, a mensagem do atendente estará no mesmo histórico.
+## Subir o ambiente
 
-## Executar o projeto
+### Opção A — Docker Compose (stack completa)
 
-A pasta `web/` já está configurada. Pré-requisitos: Flutter 3.22 ou mais recente instalado e um dispositivo, emulador ou navegador configurado.
+```bash
+docker compose up --build
+```
+
+Sobe PostgreSQL, Redis, Redpanda, os cinco serviços Orion, o job de carga de demonstração e o frontend.
+
+- Frontend: <http://localhost:8080>
+- API do gateway: <http://localhost:8000>
+- Saúde do sistema: <http://localhost:8000/health>
+
+Para usar o Claude no motor de NLU, crie um `.env` na raiz antes de subir:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+ORION_JWT_SECRET=troque-este-segredo
+```
+
+Derrubar tudo, incluindo os volumes:
+
+```bash
+docker compose down -v
+```
+
+### Opção B — sem Docker
+
+O backend inteiro roda em um processo, com repositórios em memória e barramento interno — sem PostgreSQL, Redis ou Kafka instalados:
+
+```bash
+cd backend
+go run ./cmd/orion -service=all
+```
+
+Em outro terminal:
 
 ```bash
 flutter pub get
-flutter run -d chrome
+flutter run -d chrome --dart-define=ORION_API_URL=http://localhost:8000 --dart-define=ORION_WS_URL=ws://localhost:8000/ws
 ```
 
-Para executar os testes:
+> A opção B é para desenvolvimento e para os testes. O caminho com persistência real em PostgreSQL é a opção A.
+
+---
+
+## Contas de demonstração
+
+Criadas automaticamente pelo seed, já pré-preenchidas na tela de login.
+
+| Perfil | E-mail | Senha |
+|---|---|---|
+| Cliente | `cliente@orion.dev` | `orion12345` |
+| Atendente | `atendente@orion.dev` | `orion12345` |
+
+O seed também cria três atendimentos de outros clientes (um na fila, um em andamento, um concluído), para que o dashboard não abra vazio. Ele é idempotente: reiniciar a stack não duplica dados.
+
+---
+
+## Rodar os dois fluxos de demonstração
+
+### Fluxo A — suporte técnico com continuidade entre canais
+
+1. Entre como **cliente** (`cliente@orion.dev`) e abra **Área do cliente**.
+2. O canal ativo começa em **App Claro** — troque para **WhatsApp** no seletor de canal.
+3. Envie **"minha internet está lenta"** (ou use o atalho *Internet lenta*).
+   → A IA classifica `SUPORTE_TECNICO` com 94% de confiança e pergunta se pode reiniciar o sinal.
+4. **Não responda.** Troque o canal para **Web Portal**.
+   → O sistema reconhece o mesmo cliente, informa que a sessão foi recuperada e pergunta se você quer continuar de onde parou.
+5. Clique em **Continuar aqui**.
+   → A ação é executada, o atendimento é concluído e o chamado é encerrado junto.
+6. Abra **Meus chamados** para ver o protocolo, a linha do tempo e as notificações geradas.
+
+O histórico final mostra mensagens carimbadas em **dois canais diferentes** — é a prova da continuidade.
+
+### Fluxo B — baixa confiança da IA com transbordo humano
+
+1. Como **cliente**, envie **"quero contestar uma cobrança indevida"** (ou use o atalho *Cobrança indevida*).
+   → Classificado como `CONTESTACAO_FATURA` com 45% de confiança, abaixo do limiar de 70%.
+   → O sistema avisa que vai transferir e publica o evento `REQUIRED_HUMAN_ASSISTANCE`.
+2. **Abra outra aba** em <http://localhost:8080> e entre como **atendente** (`atendente@orion.dev`).
+3. Abra o **Dashboard administrativo**.
+   → O atendimento aparece na fila **em tempo real**, com o resumo da IA, a intenção e a confiança.
+4. Clique em **Assumir** e envie uma resposta manual.
+5. Volte à aba do cliente.
+   → A resposta do atendente está no mesmo canal em que o cliente estava, sem recarregar a página.
+6. No dashboard, clique em **Concluir** para encerrar o atendimento.
+
+> Para ver o tempo real de verdade, deixe as duas abas lado a lado. Elas compartilham o mesmo backend por WebSocket.
+
+---
+
+## Testes
+
+**Backend** — inclui os dois fluxos de aceitação ponta a ponta, com os cinco serviços rodando de verdade:
+
+```bash
+cd backend && go test ./...
+```
+
+**Frontend**:
 
 ```bash
 flutter test
 ```
 
-Para gerar também as pastas nativas Android e iOS, execute `flutter create . --platforms=android,ios` na raiz do projeto.
+O que cada teste garante está detalhado em [FUNCIONALIDADES.md](FUNCIONALIDADES.md#o-que-é-verificado-por-teste).
 
-O projeto não usa pacotes externos de estado ou interface. Toda a demonstração funciona apenas com o SDK do Flutter.
+---
 
-## Estrutura principal
+## Configuração
 
-```text
-lib/
-├── main.dart
-├── app.dart
-├── core/
-│   ├── app_theme.dart
-│   ├── models.dart
-│   └── orion_controller.dart
-├── screens/
-│   ├── role_selection_screen.dart
-│   ├── customer_portal.dart
-│   └── admin_portal.dart
-└── widgets/
-    └── common_widgets.dart
-```
+Todas as variáveis têm padrão seguro para desenvolvimento.
 
-## Estado e integração
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `ORION_ENV` | `development` | Em `production`, recusa iniciar com o segredo JWT padrão |
+| `ORION_JWT_SECRET` | segredo de dev | Assinatura do token |
+| `ORION_CONFIDENCE_THRESHOLD` | `0.70` | Abaixo disso, o atendimento vai para um humano |
+| `ANTHROPIC_API_KEY` | vazio | Sem ela, o NLU usa o motor de regras |
+| `ORION_NLU_MODEL` | `claude-opus-5` | Modelo usado na classificação |
+| `ORION_POSTGRES_URL` | vazio | Sem ela, repositórios em memória |
+| `ORION_REDIS_URL` | vazio | Sem ela, contexto de sessão em memória |
+| `ORION_KAFKA_BROKER` | vazio | Sem ela, barramento de eventos em processo |
+| `ORION_INTERNAL_TIMEOUT` | `3s` | Timeout entre serviços |
+| `ORION_SEED` | `true` | Carga de demonstração no boot |
 
-O arquivo `lib/core/orion_controller.dart` atua como backend em memória. Ele simula:
+Lista completa em [`backend/internal/config/config.go`](backend/internal/config/config.go).
 
-- criação e manutenção de sessão;
-- análise de intenção;
-- persistência de contexto;
-- publicação de evento de transbordo;
-- atribuição de atendimento;
-- envio de mensagem manual;
-- conclusão do protocolo.
+---
 
-Para uma integração real, o controlador pode ser substituído por um repositório que converse com o ORION Gateway. O documento explicita o envio inicial por `POST /message`; os demais contratos abaixo são sugestões de implementação para completar a interface, não endpoints definidos no material original:
+## API do gateway
 
-```text
-POST /message
-GET  /sessions/{sessionId}
-GET  /admin/cases
-POST /admin/cases/{caseId}/assign
-POST /admin/cases/{caseId}/messages
-POST /admin/cases/{caseId}/resolve
-WS   /admin/events
-```
+Todas as rotas sob `/api` exigem `Authorization: Bearer <token>`, exceto login e cadastro.
 
-## Decisões de escopo
+| Método | Rota | Descrição |
+|---|---|---|
+| `POST` | `/api/auth/login` | Autentica e devolve o token |
+| `POST` | `/api/auth/register` | Cria uma conta de cliente |
+| `GET` | `/api/auth/me` | Perfil autenticado |
+| `DELETE` | `/api/auth/me` | Eliminação de dados (LGPD) |
+| `GET` | `/api/state?channel=` | Estado completo; abre a conversa no primeiro acesso |
+| `GET` | `/api/session` | Contexto de jornada armazenado |
+| `POST` | `/api/cases/{id}/messages` | Envia mensagem do cliente |
+| `POST` | `/api/cases/{id}/switch-channel` | Troca de canal com recuperação de contexto |
+| `POST` | `/api/cases/{id}/continue-here` | Retoma a ação pendente no canal atual |
+| `POST` | `/api/cases/{id}/confirm-restart` · `/decline-restart` | Responde à ação pendente |
+| `GET` | `/api/tickets` · `/api/notifications` · `/api/recommendations` | Chamados, avisos e sugestões |
+| `POST` | `/api/cases/{id}/take` · `/agent-messages` · `/resolve` | **Somente atendente** |
+| `GET` | `/ws?token=` | WebSocket de estado em tempo real |
+| `GET` | `/health` · `/ready` | Saúde e prontidão |
 
-- A autenticação aparece na arquitetura, mas o documento não define telas ou regras de login. Por isso, o protótipo começa com uma seleção de experiência.
-- AWS, Kubernetes, Kafka, DynamoDB, RDS, S3 e SNS não são acessados. A tela de monitoramento é visual e seus indicadores são explicitamente marcados como simulados.
-- Nomes de clientes, planos e protocolos são dados fictícios de demonstração.
-- O visual usa uma paleta inspirada na marca citada no documento, sem depender de arquivos de logo ou fontes proprietárias.
+---
+
+## Estado da verificação
+
+Transparência sobre o que foi executado no ambiente de desenvolvimento deste protótipo:
+
+| Item | Status |
+|---|---|
+| Backend Go — build, `go vet`, suíte completa de testes | ✅ Executado, tudo passando |
+| Fluxos A e B ponta a ponta | ✅ Executados por teste automatizado e manualmente via HTTP |
+| Autenticação, autorização e mascaramento em log | ✅ Verificados |
+| `docker compose up` | ⚠️ Não executado — Docker não estava instalado no ambiente de desenvolvimento |
+| `flutter test` / `flutter analyze` | ⚠️ Não executados — Flutter não estava instalado no ambiente de desenvolvimento |
+| Detector de corrida do Go (`-race`) | ⚠️ Não executado — exige compilador C, ausente no ambiente |
+
+O backend foi validado rodando de verdade. O frontend e o Compose foram escritos com cuidado, mas precisam de uma execução em máquina com Flutter e Docker antes da entrega final.

@@ -24,11 +24,17 @@ class _AdminPortalState extends State<AdminPortal> {
   @override
   void initState() {
     super.initState();
-    final List<SupportCase> initial = widget.controller.waitingCases;
-    if (initial.isNotEmpty) {
-      _selectedCaseId = initial.first.id;
-    } else if (widget.controller.activeCases.isNotEmpty) {
-      _selectedCaseId = widget.controller.activeCases.first.id;
+    // Preselect whatever needs attention first: the queue, then a live
+    // conversation, then something already assigned.
+    for (final List<SupportCase> candidates in <List<SupportCase>>[
+      widget.controller.waitingCases,
+      widget.controller.botCases,
+      widget.controller.activeCases,
+    ]) {
+      if (candidates.isNotEmpty) {
+        _selectedCaseId = candidates.first.id;
+        break;
+      }
     }
   }
 
@@ -149,6 +155,11 @@ class _AdminPortalState extends State<AdminPortal> {
                     label: Text('Fila'),
                   ),
                   NavigationRailDestination(
+                    icon: Icon(Icons.smart_toy_outlined),
+                    selectedIcon: Icon(Icons.smart_toy_rounded),
+                    label: Text('Com a IA'),
+                  ),
+                  NavigationRailDestination(
                     icon: Icon(Icons.forum_outlined),
                     selectedIcon: Icon(Icons.forum_rounded),
                     label: Text('Em atendimento'),
@@ -183,6 +194,11 @@ class _AdminPortalState extends State<AdminPortal> {
                 label: 'Fila',
               ),
               NavigationDestination(
+                icon: Icon(Icons.smart_toy_outlined),
+                selectedIcon: Icon(Icons.smart_toy_rounded),
+                label: 'Com a IA',
+              ),
+              NavigationDestination(
                 icon: Icon(Icons.forum_outlined),
                 selectedIcon: Icon(Icons.forum_rounded),
                 label: 'Atendimentos',
@@ -211,11 +227,18 @@ class _AdminPortalState extends State<AdminPortal> {
       case 1:
         return _AdminCasesPage(
           controller: widget.controller,
-          mode: _CasesMode.active,
+          mode: _CasesMode.bot,
           selectedCaseId: _selectedCaseId,
           onSelectCase: _selectCase,
         );
       case 2:
+        return _AdminCasesPage(
+          controller: widget.controller,
+          mode: _CasesMode.active,
+          selectedCaseId: _selectedCaseId,
+          onSelectCase: _selectCase,
+        );
+      case 3:
         return _MonitoringPage(controller: widget.controller);
       default:
         return const SizedBox.shrink();
@@ -223,7 +246,10 @@ class _AdminPortalState extends State<AdminPortal> {
   }
 }
 
-enum _CasesMode { waiting, active }
+// The dashboard separates the human queue from the conversations the
+// assistant is still handling, because they demand different attention: the
+// queue is a backlog, the automated list is a live feed.
+enum _CasesMode { waiting, bot, active }
 
 class _AdminCasesPage extends StatelessWidget {
   const _AdminCasesPage({
@@ -243,9 +269,11 @@ class _AdminCasesPage extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (BuildContext context, Widget? child) {
-        final List<SupportCase> items = mode == _CasesMode.waiting
-            ? controller.waitingCases
-            : controller.activeCases;
+        final List<SupportCase> items = switch (mode) {
+          _CasesMode.waiting => controller.waitingCases,
+          _CasesMode.bot => controller.botCases,
+          _CasesMode.active => controller.activeCases,
+        };
         final String? effectiveSelected = _effectiveSelected(items);
 
         return LayoutBuilder(
@@ -357,16 +385,23 @@ class _CasesHeader extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                mode == _CasesMode.waiting
-                    ? 'Fila de atendimento'
-                    : 'Atendimentos em andamento',
+                switch (mode) {
+                  _CasesMode.waiting => 'Fila de atendimento',
+                  _CasesMode.bot => 'Conversas com a IA',
+                  _CasesMode.active => 'Atendimentos em andamento',
+                },
                 style: Theme.of(context).textTheme.headlineMedium,
               ),
               const SizedBox(height: 5),
               Text(
-                mode == _CasesMode.waiting
-                    ? 'Eventos de baixa confiança aguardando uma pessoa atendente.'
-                    : 'Conversas assumidas com histórico e resumo contextual.',
+                switch (mode) {
+                  _CasesMode.waiting =>
+                    'Eventos de baixa confiança aguardando uma pessoa atendente.',
+                  _CasesMode.bot =>
+                    'Atendimentos que o assistente está conduzindo sozinho. Você pode acompanhar e intervir a qualquer momento.',
+                  _CasesMode.active =>
+                    'Conversas assumidas com histórico e resumo contextual.',
+                },
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: AppColors.muted,
                     ),
@@ -423,6 +458,13 @@ class _MetricsGrid extends StatelessWidget {
             icon: Icons.inbox_outlined,
             accent: AppColors.warning,
             helper: 'Requer humano',
+          ),
+          MetricCard(
+            label: 'Com a IA',
+            value: '${controller.botCases.length}',
+            icon: Icons.smart_toy_outlined,
+            accent: AppColors.info,
+            helper: 'Resolvendo sozinho',
           ),
           MetricCard(
             label: 'Em atendimento',
@@ -564,7 +606,10 @@ class _CasesListContent extends StatelessWidget {
           item: item,
           selected: selectedCaseId == item.id,
           onTap: () => onSelectCase(context, item.id),
-          onTake: item.status == SupportCaseStatus.waitingHuman
+          // An agent can take a case from the queue or step into one the
+          // assistant is still handling.
+          onTake: item.status == SupportCaseStatus.waitingHuman ||
+                  item.status == SupportCaseStatus.bot
               ? () => controller.takeCase(item.id)
               : null,
         );
@@ -968,6 +1013,14 @@ class _WorkspaceHeader extends StatelessWidget {
               icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
               label: const Text('Assumir'),
             )
+          else if (item.status == SupportCaseStatus.bot)
+            // Different word on purpose: nobody asked for a human here, so the
+            // agent is interrupting the assistant, not answering a request.
+            OutlinedButton.icon(
+              onPressed: () => controller.takeCase(item.id),
+              icon: const Icon(Icons.pan_tool_alt_outlined, size: 18),
+              label: const Text('Intervir'),
+            )
           else if (item.status == SupportCaseStatus.inProgress)
             OutlinedButton.icon(
               onPressed: () => controller.resolveCase(item.id),
@@ -1232,7 +1285,7 @@ class _TimelineItem extends StatelessWidget {
             height: 31,
             decoration: BoxDecoration(
               color: done
-                  ? AppColors.success.withOpacity(0.10)
+                  ? AppColors.success.withValues(alpha: 0.10)
                   : AppColors.canvas,
               shape: BoxShape.circle,
             ),
@@ -1401,6 +1454,14 @@ class _MonitoringPage extends StatelessWidget {
                   child: Column(
                     children: <Widget>[
                       _EventRow(
+                        icon: Icons.smart_toy_outlined,
+                        title: 'CONVERSATION_UPDATED',
+                        subtitle:
+                            '${controller.botCases.length} sessão(ões) conduzidas pelo assistente',
+                        accent: AppColors.info,
+                      ),
+                      const Divider(height: 22),
+                      _EventRow(
                         icon: Icons.notifications_active_outlined,
                         title: 'REQUIRED_HUMAN_ASSISTANCE',
                         subtitle:
@@ -1523,7 +1584,7 @@ class _ArchitectureNode extends StatelessWidget {
             width: 43,
             height: 43,
             decoration: BoxDecoration(
-              color: accent.withOpacity(0.10),
+              color: accent.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(14),
             ),
             child: Icon(icon, color: accent),
@@ -1727,7 +1788,7 @@ class _EventRow extends StatelessWidget {
           width: 39,
           height: 39,
           decoration: BoxDecoration(
-            color: accent.withOpacity(0.10),
+            color: accent.withValues(alpha: 0.10),
             shape: BoxShape.circle,
           ),
           child: Icon(icon, color: accent, size: 19),

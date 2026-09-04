@@ -2,33 +2,203 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'api_client.dart';
 import 'models.dart';
 
+/// Remote-state client for the Orion CX platform.
+///
+/// Commands go out over REST to the ORION Gateway; the resulting state comes
+/// back through a single WebSocket as a full snapshot scoped to the
+/// authenticated principal. That snapshot is what updates [cases] and triggers
+/// [notifyListeners] — the HTTP response body is otherwise ignored — so the
+/// customer chat and the agent dashboard always agree, even in different
+/// browser tabs.
 class OrionController extends ChangeNotifier {
-  OrionController._() {
-    _loadDemoData();
+  OrionController._(this._api) {
+    _snapshotSub = _api.snapshots().listen(_applyFrame);
   }
 
-  factory OrionController.demo() => OrionController._();
+  factory OrionController.connect({
+    String? httpBaseUrl,
+    String? wsBaseUrl,
+  }) {
+    final String resolvedHttpBaseUrl = httpBaseUrl ??
+        const String.fromEnvironment(
+          'ORION_API_URL',
+          defaultValue: 'http://localhost:8000',
+        );
+    final String resolvedWsBaseUrl = wsBaseUrl ??
+        const String.fromEnvironment(
+          'ORION_WS_URL',
+          defaultValue: 'ws://localhost:8000/ws',
+        );
+    return OrionController._(
+      ApiClient(httpBaseUrl: resolvedHttpBaseUrl, wsBaseUrl: resolvedWsBaseUrl),
+    );
+  }
 
-  static const String customerCaseId = 'CX-2026-0142';
+  /// Lets tests inject a fake [OrionApi] instead of opening a real socket.
+  @visibleForTesting
+  factory OrionController.withApi(OrionApi api) => OrionController._(api);
+
+  /// Pending actions the backend can store on a conversation.
   static const String restartAction = 'RESTART_SIGNAL';
   static const String continueAction = 'CONTINUE_PENDING_ACTION';
   static const String humanHandoffAction = 'REQUIRED_HUMAN_ASSISTANCE';
 
-  final List<SupportCase> _cases = <SupportCase>[];
-  int _messageCounter = 0;
+  final OrionApi _api;
+  late final StreamSubscription<Map<String, dynamic>> _snapshotSub;
+
+  final Map<String, SupportCase> _casesById = <String, SupportCase>{};
+  List<Ticket> _tickets = <Ticket>[];
+  List<AppNotification> _notifications = <AppNotification>[];
+  List<Recommendation> _recommendations = <Recommendation>[];
+
+  AuthUser? _user;
+  String? _activeCaseId;
 
   bool isBotTyping = false;
   bool liveAlertVisible = true;
+  bool isConnected = false;
+  bool isAuthenticating = false;
+  String? authError;
   UserChannel currentChannel = UserChannel.appClaro;
 
-  List<SupportCase> get cases => List<SupportCase>.unmodifiable(_cases);
+  /// Confidence below which the gateway hands a conversation to a person.
+  /// Reported by the backend so the UI never hardcodes a policy value.
+  double confidenceThreshold = 0.70;
 
-  SupportCase get customerCase => caseById(customerCaseId);
+  // --- session ---------------------------------------------------------------
+
+  AuthUser? get user => _user;
+  bool get isAuthenticated => _user != null;
+  bool get isAgent => _user?.isAgent ?? false;
+
+  /// Signs in and opens the authenticated socket.
+  Future<bool> login(String email, String password) async {
+    return _authenticate(() => _api.login(email.trim(), password));
+  }
+
+  /// Creates a customer account and signs in with it.
+  Future<bool> register({
+    required String email,
+    required String password,
+    required String name,
+    String documentMask = '',
+    String planName = '',
+  }) async {
+    return _authenticate(() => _api.register(
+          email: email.trim(),
+          password: password,
+          name: name.trim(),
+          documentMask: documentMask,
+          planName: planName,
+        ));
+  }
+
+  Future<bool> _authenticate(Future<AuthSession> Function() request) async {
+    isAuthenticating = true;
+    authError = null;
+    notifyListeners();
+    try {
+      final AuthSession session = await request();
+      _user = session.user;
+      _api.useToken(session.token);
+      // The socket needs a moment to deliver the first snapshot; loading the
+      // state over REST makes the first screen render immediately and, for a
+      // customer, opens the conversation on the current channel.
+      await refresh();
+      return true;
+    } on ApiException catch (error) {
+      authError = error.message;
+      return false;
+    } catch (error) {
+      authError = 'Não foi possível entrar. Tente novamente.';
+      debugPrint('Orion: falha no login: $error');
+      return false;
+    } finally {
+      isAuthenticating = false;
+      notifyListeners();
+    }
+  }
+
+  /// Drops the session locally. The token is not persisted anywhere, so
+  /// closing the tab has the same effect.
+  void logout() {
+    _api.useToken(null);
+    _user = null;
+    _activeCaseId = null;
+    _casesById.clear();
+    _tickets = <Ticket>[];
+    _notifications = <AppNotification>[];
+    _recommendations = <Recommendation>[];
+    isConnected = false;
+    currentChannel = UserChannel.appClaro;
+    notifyListeners();
+  }
+
+  /// Reloads the whole state over REST. Used after login and by pull-to-refresh
+  /// style actions; normal updates arrive over the socket.
+  Future<void> refresh() async {
+    if (!isAuthenticated) {
+      return;
+    }
+    try {
+      _applyFrame(await _api.loadState(currentChannel));
+      _recommendations = await _api.loadRecommendations();
+      notifyListeners();
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao carregar estado: ${error.message}');
+    }
+  }
+
+  /// Anonymizes the account and every trace of it (LGPD), then signs out.
+  Future<bool> forgetMe() async {
+    try {
+      await _api.forgetMe();
+      logout();
+      return true;
+    } on ApiException catch (error) {
+      authError = error.message;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // --- state -----------------------------------------------------------------
+
+  List<SupportCase> get cases =>
+      List<SupportCase>.unmodifiable(_casesById.values);
+
+  List<Ticket> get tickets => List<Ticket>.unmodifiable(_tickets);
+
+  List<AppNotification> get notifications =>
+      List<AppNotification>.unmodifiable(_notifications);
+
+  List<Recommendation> get recommendations =>
+      List<Recommendation>.unmodifiable(_recommendations);
+
+  int get unreadNotifications =>
+      _notifications.where((AppNotification item) => !item.read).length;
+
+  /// Id of the conversation the customer screens act on.
+  String get customerCaseId => _activeCaseId ?? '';
+
+  /// The customer's live conversation.
+  ///
+  /// Returns a placeholder while the first snapshot is in flight so the widget
+  /// tree never has to null-check; screens are only reachable once
+  /// [isConnected] is true.
+  SupportCase get customerCase {
+    final SupportCase? item = _casesById[_activeCaseId];
+    if (item != null) {
+      return item;
+    }
+    return _placeholderCase();
+  }
 
   List<SupportCase> get waitingCases {
-    final List<SupportCase> result = _cases
+    final List<SupportCase> result = _casesById.values
         .where((SupportCase item) =>
             item.status == SupportCaseStatus.waitingHuman)
         .toList();
@@ -37,127 +207,139 @@ class OrionController extends ChangeNotifier {
     return result;
   }
 
-  List<SupportCase> get activeCases => _cases
-      .where((SupportCase item) =>
-          item.status == SupportCaseStatus.inProgress)
+  /// Conversations the assistant is still handling on its own.
+  ///
+  /// They are not in the human queue, but the dashboard shows them so an agent
+  /// can watch a live conversation and step in before it goes wrong. Newest
+  /// activity first: an agent scanning this list cares about what is moving.
+  List<SupportCase> get botCases {
+    final List<SupportCase> result = _casesById.values
+        .where((SupportCase item) => item.status == SupportCaseStatus.bot)
+        .toList();
+    result.sort((SupportCase a, SupportCase b) =>
+        b.updatedAt.compareTo(a.updatedAt));
+    return result;
+  }
+
+  List<SupportCase> get activeCases => _casesById.values
+      .where((SupportCase item) => item.status == SupportCaseStatus.inProgress)
       .toList();
 
-  List<SupportCase> get resolvedCases => _cases
+  List<SupportCase> get resolvedCases => _casesById.values
       .where((SupportCase item) => item.status == SupportCaseStatus.resolved)
       .toList();
 
-  int get unattendedEvents => waitingCases
-      .where((SupportCase item) => item.hasUnreadEvent)
-      .length;
+  int get unattendedEvents =>
+      waitingCases.where((SupportCase item) => item.hasUnreadEvent).length;
 
   SupportCase caseById(String id) {
-    return _cases.firstWhere((SupportCase item) => item.id == id);
+    final SupportCase? item = _casesById[id];
+    if (item == null) {
+      throw StateError('Caso não encontrado: $id');
+    }
+    return item;
   }
+
+  /// Tickets linked to one conversation, used by the customer history screen.
+  List<Ticket> ticketsForCase(String caseId) => _tickets
+      .where((Ticket ticket) => ticket.conversationId == caseId)
+      .toList();
+
+  SupportCase _placeholderCase() {
+    final DateTime now = DateTime.now();
+    return SupportCase(
+      id: '—',
+      customerName: _user?.name ?? 'Cliente',
+      customerDocument: _user?.documentMask ?? '',
+      planName: _user?.planName ?? '',
+      intent: 'NAO_CLASSIFICADA',
+      intentConfidence: 0,
+      summary: 'Carregando sua sessão…',
+      status: SupportCaseStatus.bot,
+      createdAt: now,
+      updatedAt: now,
+      messages: <ChatMessage>[],
+    );
+  }
+
+  /// Applies a snapshot frame. Frames that are not snapshots (domain events)
+  /// only nudge listeners, because the snapshot that follows carries the
+  /// authoritative state.
+  void _applyFrame(Map<String, dynamic> payload) {
+    if (payload['event'] == 'domainEvent') {
+      return;
+    }
+
+    final List<dynamic> rawCases =
+        payload['cases'] as List<dynamic>? ?? const <dynamic>[];
+    _casesById
+      ..clear()
+      ..addEntries(rawCases.map((dynamic raw) {
+        final SupportCase item =
+            SupportCase.fromJson(raw as Map<String, dynamic>);
+        return MapEntry<String, SupportCase>(item.id, item);
+      }));
+
+    final List<dynamic> rawTickets =
+        payload['tickets'] as List<dynamic>? ?? const <dynamic>[];
+    _tickets = rawTickets
+        .map((dynamic raw) => Ticket.fromJson(raw as Map<String, dynamic>))
+        .toList();
+
+    final List<dynamic> rawNotifications =
+        payload['notifications'] as List<dynamic>? ?? const <dynamic>[];
+    _notifications = rawNotifications
+        .map((dynamic raw) =>
+            AppNotification.fromJson(raw as Map<String, dynamic>))
+        .toList();
+
+    liveAlertVisible =
+        payload['liveAlertVisible'] as bool? ?? liveAlertVisible;
+    confidenceThreshold =
+        (payload['confidenceThreshold'] as num?)?.toDouble() ??
+            confidenceThreshold;
+
+    _refreshActiveCase();
+    isConnected = true;
+    notifyListeners();
+  }
+
+  /// Picks the conversation the customer screens act on: the open one, or the
+  /// most recently updated if every conversation is closed.
+  void _refreshActiveCase() {
+    if (isAgent) {
+      return;
+    }
+    final List<SupportCase> mine = _casesById.values.toList()
+      ..sort((SupportCase a, SupportCase b) =>
+          a.updatedAt.compareTo(b.updatedAt));
+    if (mine.isEmpty) {
+      _activeCaseId = null;
+      return;
+    }
+    final Iterable<SupportCase> open = mine.where(
+        (SupportCase item) => item.status != SupportCaseStatus.resolved);
+    _activeCaseId = open.isNotEmpty ? open.last.id : mine.last.id;
+  }
+
+  // --- customer actions ------------------------------------------------------
 
   Future<void> sendCustomerMessage(String rawText) async {
     final String text = rawText.trim();
-    if (text.isEmpty || isBotTyping) {
+    if (text.isEmpty || isBotTyping || _activeCaseId == null) {
       return;
     }
-
-    final SupportCase item = customerCase;
-    _appendMessage(
-      item,
-      actor: ConversationActor.customer,
-      text: text,
-      channel: currentChannel,
-    );
-
-    if (item.status == SupportCaseStatus.waitingHuman ||
-        item.status == SupportCaseStatus.inProgress) {
-      item.hasUnreadEvent = true;
-      item.updatedAt = DateTime.now();
-      liveAlertVisible = true;
-      notifyListeners();
-      return;
-    }
-
     isBotTyping = true;
     notifyListeners();
-    await Future<void>.delayed(const Duration(milliseconds: 650));
-    isBotTyping = false;
-
-    final String normalized = _normalize(text);
-
-    if (item.pendingAction == restartAction && _isAffirmative(normalized)) {
-      _completeRestart(item);
+    try {
+      await _api.sendCustomerMessage(_activeCaseId!, text, currentChannel);
+      _recommendations = await _api.loadRecommendations();
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao enviar mensagem: ${error.message}');
+    } finally {
+      isBotTyping = false;
       notifyListeners();
-      return;
     }
-
-    if (item.pendingAction == continueAction && _isAffirmative(normalized)) {
-      _completeRestart(item);
-      notifyListeners();
-      return;
-    }
-
-    if (_mentionsSlowInternet(normalized)) {
-      item.intent = 'SUPORTE_TECNICO';
-      item.intentConfidence = 0.94;
-      item.summary =
-          'Cliente relata lentidão na internet. A ação sugerida é reiniciar o sinal, mantendo a sessão disponível entre canais.';
-      item.pendingAction = restartAction;
-      item.status = SupportCaseStatus.bot;
-      _appendMessage(
-        item,
-        actor: ConversationActor.assistant,
-        text:
-            'Entendi que sua internet está lenta. Posso reiniciar o sinal da sua conexão agora?',
-        channel: currentChannel,
-      );
-    } else if (_mentionsBillingDispute(normalized)) {
-      item.intent = 'CONTESTACAO_FATURA';
-      item.intentConfidence = 0.45;
-      item.summary =
-          'Cliente contesta uma cobrança na fatura. A confiança da classificação ficou abaixo do limite de automação e o caso requer atendimento humano.';
-      item.pendingAction = humanHandoffAction;
-      item.status = SupportCaseStatus.waitingHuman;
-      item.hasUnreadEvent = true;
-      liveAlertVisible = true;
-      _appendMessage(
-        item,
-        actor: ConversationActor.assistant,
-        text:
-            'Vou transferir este atendimento para uma pessoa especialista em faturas. Seu histórico já está sendo encaminhado, então você não precisará repetir as informações.',
-        channel: currentChannel,
-      );
-      _appendMessage(
-        item,
-        actor: ConversationActor.system,
-        text:
-            'Evento REQUIRED_HUMAN_ASSISTANCE publicado. Você entrou na fila de atendimento.',
-        channel: currentChannel,
-      );
-    } else if (_isNegative(normalized) && item.pendingAction == restartAction) {
-      item.pendingAction = null;
-      _appendMessage(
-        item,
-        actor: ConversationActor.assistant,
-        text:
-            'Tudo bem. Não fiz nenhuma alteração. Posso ajudar com outro diagnóstico ou encaminhar para um atendente.',
-        channel: currentChannel,
-      );
-    } else {
-      item.intent = 'EM_ANALISE';
-      item.intentConfidence = 0.68;
-      item.summary =
-          'Solicitação em análise pelo assistente conversacional. O cliente ainda não selecionou um fluxo específico.';
-      _appendMessage(
-        item,
-        actor: ConversationActor.assistant,
-        text:
-            'Posso ajudar com internet lenta ou contestação de cobrança. Conte um pouco mais sobre o que aconteceu.',
-        channel: currentChannel,
-      );
-    }
-
-    item.updatedAt = DateTime.now();
-    notifyListeners();
   }
 
   Future<void> confirmRestart() async {
@@ -166,82 +348,8 @@ class OrionController extends ChangeNotifier {
         item.pendingAction != continueAction) {
       return;
     }
-
-    _appendMessage(
-      item,
-      actor: ConversationActor.customer,
-      text: 'Sim, pode reiniciar.',
-      channel: currentChannel,
-    );
-    isBotTyping = true;
-    notifyListeners();
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    isBotTyping = false;
-    _completeRestart(item);
-    notifyListeners();
-  }
-
-  void declineRestart() {
-    final SupportCase item = customerCase;
-    if (item.pendingAction != restartAction &&
-        item.pendingAction != continueAction) {
-      return;
-    }
-
-    _appendMessage(
-      item,
-      actor: ConversationActor.customer,
-      text: 'Agora não.',
-      channel: currentChannel,
-    );
-    item.pendingAction = null;
-    _appendMessage(
-      item,
-      actor: ConversationActor.assistant,
-      text:
-          'Sem problema. A ação foi cancelada e o atendimento continua disponível.',
-      channel: currentChannel,
-    );
-    notifyListeners();
-  }
-
-  void switchChannel(UserChannel channel) {
-    if (channel == currentChannel) {
-      return;
-    }
-
-    final UserChannel previous = currentChannel;
-    currentChannel = channel;
-    final SupportCase item = customerCase;
-
-    _appendMessage(
-      item,
-      actor: ConversationActor.system,
-      text:
-          'Sessão ${item.id} recuperada de ${previous.label} em ${channel.label}.',
-      channel: channel,
-    );
-
-    if (item.pendingAction == restartAction) {
-      item.pendingAction = continueAction;
-      _appendMessage(
-        item,
-        actor: ConversationActor.assistant,
-        text:
-            'Encontrei uma ação pendente: reiniciar o sinal. Quer continuar por aqui?',
-        channel: channel,
-      );
-    } else {
-      _appendMessage(
-        item,
-        actor: ConversationActor.assistant,
-        text:
-            'Seu contexto foi mantido. Podemos continuar o atendimento deste ponto.',
-        channel: channel,
-      );
-    }
-
-    notifyListeners();
+    await _runCustomerAction(
+        () => _api.confirmRestart(_activeCaseId!, currentChannel));
   }
 
   Future<void> continueHere() async {
@@ -249,365 +357,169 @@ class OrionController extends ChangeNotifier {
     if (item.pendingAction != continueAction) {
       return;
     }
-
-    _appendMessage(
-      item,
-      actor: ConversationActor.customer,
-      text: 'Sim, por favor.',
-      channel: currentChannel,
-    );
-    isBotTyping = true;
-    notifyListeners();
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    isBotTyping = false;
-    _completeRestart(item);
-    notifyListeners();
+    await _runCustomerAction(
+        () => _api.continueHere(_activeCaseId!, currentChannel));
   }
 
-  void takeCase(String caseId, {String agentName = 'Camila Rocha'}) {
-    final SupportCase item = caseById(caseId);
-    if (item.status != SupportCaseStatus.waitingHuman) {
+  Future<void> declineRestart() async {
+    final SupportCase item = customerCase;
+    if (item.pendingAction != restartAction &&
+        item.pendingAction != continueAction) {
       return;
     }
-
-    item.status = SupportCaseStatus.inProgress;
-    item.assignedAgent = agentName;
-    item.hasUnreadEvent = false;
-    item.pendingAction = null;
-    item.updatedAt = DateTime.now();
-    _appendMessage(
-      item,
-      actor: ConversationActor.system,
-      text: '$agentName assumiu o atendimento.',
-      channel: item.lastChannel,
-    );
-    notifyListeners();
+    try {
+      await _api.declineRestart(_activeCaseId!, currentChannel);
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao recusar ação: ${error.message}');
+    }
   }
 
-  void markCaseRead(String caseId) {
+  Future<void> _runCustomerAction(Future<void> Function() action) async {
+    if (_activeCaseId == null) {
+      return;
+    }
+    isBotTyping = true;
+    notifyListeners();
+    try {
+      await action();
+      _recommendations = await _api.loadRecommendations();
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha na ação do cliente: ${error.message}');
+    } finally {
+      isBotTyping = false;
+      notifyListeners();
+    }
+  }
+
+  /// Moves the customer to another channel. The backend recovers the stored
+  /// context and offers to resume any pending action (RF003).
+  Future<void> switchChannel(UserChannel channel) async {
+    if (channel == currentChannel || _activeCaseId == null) {
+      return;
+    }
+    final UserChannel previous = currentChannel;
+    currentChannel = channel;
+    notifyListeners();
+    try {
+      await _api.switchChannel(_activeCaseId!, channel, previous);
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao trocar de canal: ${error.message}');
+    }
+  }
+
+  Future<void> resetCustomerConversation() async {
+    if (_activeCaseId == null) {
+      return;
+    }
+    currentChannel = UserChannel.appClaro;
+    notifyListeners();
+    try {
+      await _api.resetCustomerConversation(_activeCaseId!);
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao reiniciar conversa: ${error.message}');
+    }
+  }
+
+  /// Restarts the demo conversation from a clean state.
+  Future<void> resetDemo() async {
+    isBotTyping = false;
+    liveAlertVisible = true;
+    await resetCustomerConversation();
+    await refresh();
+  }
+
+  Future<void> markNotificationRead(String notificationId) async {
+    try {
+      await _api.markNotificationRead(notificationId);
+      await refresh();
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao marcar notificação: ${error.message}');
+    }
+  }
+
+  Future<void> markAllNotificationsRead() async {
+    try {
+      await _api.markAllNotificationsRead();
+      await refresh();
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao marcar notificações: ${error.message}');
+    }
+  }
+
+  // --- agent actions ---------------------------------------------------------
+
+  /// Assigns a conversation to the signed-in agent. Works both for the human
+  /// queue and for a conversation the assistant is still handling, which is
+  /// how an agent intervenes proactively.
+  Future<void> takeCase(String caseId, {String agentName = ''}) async {
+    final SupportCase item = caseById(caseId);
+    if (item.status != SupportCaseStatus.waitingHuman &&
+        item.status != SupportCaseStatus.bot) {
+      return;
+    }
+    try {
+      // The backend assigns the case to the authenticated agent; the name is
+      // kept in the signature for compatibility with the existing screens.
+      await _api.takeCase(caseId, agentName.isEmpty ? (_user?.name ?? '') : agentName);
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao assumir atendimento: ${error.message}');
+    }
+  }
+
+  Future<void> markCaseRead(String caseId) async {
     final SupportCase item = caseById(caseId);
     if (!item.hasUnreadEvent) {
       return;
     }
-    item.hasUnreadEvent = false;
-    notifyListeners();
+    try {
+      await _api.markCaseRead(caseId);
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao marcar como lido: ${error.message}');
+    }
   }
 
-  void sendAgentMessage(String caseId, String rawText) {
+  Future<void> sendAgentMessage(String caseId, String rawText) async {
     final String text = rawText.trim();
     if (text.isEmpty) {
       return;
     }
-
     final SupportCase item = caseById(caseId);
     if (item.status != SupportCaseStatus.inProgress) {
       return;
     }
-
-    _appendMessage(
-      item,
-      actor: ConversationActor.agent,
-      text: text,
-      channel: item.lastChannel,
-    );
-    item.hasUnreadEvent = false;
-    item.updatedAt = DateTime.now();
-    notifyListeners();
+    try {
+      await _api.sendAgentMessage(caseId, text);
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao responder: ${error.message}');
+    }
   }
 
-  void resolveCase(String caseId) {
+  Future<void> resolveCase(String caseId) async {
     final SupportCase item = caseById(caseId);
     if (item.status == SupportCaseStatus.resolved) {
       return;
     }
-
-    item.status = SupportCaseStatus.resolved;
-    item.pendingAction = null;
-    item.hasUnreadEvent = false;
-    item.updatedAt = DateTime.now();
-    _appendMessage(
-      item,
-      actor: ConversationActor.system,
-      text: 'Atendimento concluído e histórico salvo.',
-      channel: item.lastChannel,
-    );
-    notifyListeners();
+    try {
+      await _api.resolveCase(caseId);
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao concluir atendimento: ${error.message}');
+    }
   }
 
-  void dismissLiveAlert() {
+  Future<void> dismissLiveAlert() async {
     liveAlertVisible = false;
     notifyListeners();
+    try {
+      await _api.dismissAlert();
+    } on ApiException catch (error) {
+      debugPrint('Orion: falha ao ocultar alerta: ${error.message}');
+    }
   }
 
-  void resetCustomerConversation() {
-    final SupportCase item = customerCase;
-    item.messages.clear();
-    item.intent = 'NÃO_CLASSIFICADA';
-    item.intentConfidence = 0;
-    item.summary =
-        'Nova sessão criada. Aguardando a primeira solicitação do cliente.';
-    item.status = SupportCaseStatus.bot;
-    item.pendingAction = null;
-    item.assignedAgent = null;
-    item.hasUnreadEvent = false;
-    item.updatedAt = DateTime.now();
-    currentChannel = UserChannel.appClaro;
-    _appendMessage(
-      item,
-      actor: ConversationActor.assistant,
-      text:
-          'Olá! Eu sou o assistente Orion. Como posso ajudar com sua internet ou sua fatura hoje?',
-      channel: currentChannel,
-    );
-    notifyListeners();
-  }
-
-  void resetDemo() {
-    _cases.clear();
-    _messageCounter = 0;
-    isBotTyping = false;
-    liveAlertVisible = true;
-    currentChannel = UserChannel.appClaro;
-    _loadDemoData();
-    notifyListeners();
-  }
-
-  void _completeRestart(SupportCase item) {
-    item.pendingAction = null;
-    item.intent = 'SUPORTE_TECNICO';
-    item.intentConfidence = 0.94;
-    item.summary =
-        'Cliente relatou lentidão, autorizou o reinício do sinal e recebeu a confirmação da execução.';
-    item.status = SupportCaseStatus.resolved;
-    item.updatedAt = DateTime.now();
-    _appendMessage(
-      item,
-      actor: ConversationActor.assistant,
-      text:
-          'Pronto! O sinal foi reiniciado. Aguarde cerca de 30 segundos e teste a conexão novamente.',
-      channel: currentChannel,
-    );
-  }
-
-  void _appendMessage(
-    SupportCase item, {
-    required ConversationActor actor,
-    required String text,
-    required UserChannel channel,
-  }) {
-    _messageCounter += 1;
-    item.messages.add(
-      ChatMessage(
-        id: 'MSG-$_messageCounter',
-        actor: actor,
-        text: text,
-        sentAt: DateTime.now(),
-        channel: channel,
-      ),
-    );
-    item.updatedAt = DateTime.now();
-  }
-
-  bool _mentionsSlowInternet(String text) {
-    return text.contains('internet') &&
-        (text.contains('lenta') ||
-            text.contains('lento') ||
-            text.contains('lentidao') ||
-            text.contains('conexao'));
-  }
-
-  bool _mentionsBillingDispute(String text) {
-    return text.contains('cobranca') ||
-        text.contains('indevida') ||
-        text.contains('contestar') ||
-        text.contains('contestacao') ||
-        (text.contains('fatura') && text.contains('valor'));
-  }
-
-  bool _isAffirmative(String text) {
-    return text == 'sim' ||
-        text.startsWith('sim ') ||
-        text.contains('pode reiniciar') ||
-        text.contains('por favor');
-  }
-
-  bool _isNegative(String text) {
-    return text == 'nao' ||
-        text.startsWith('nao ') ||
-        text.contains('agora nao');
-  }
-
-  String _normalize(String value) {
-    return value
-        .toLowerCase()
-        .replaceAll(RegExp(r'[áàâãä]'), 'a')
-        .replaceAll(RegExp(r'[éèêë]'), 'e')
-        .replaceAll(RegExp(r'[íìîï]'), 'i')
-        .replaceAll(RegExp(r'[óòôõö]'), 'o')
-        .replaceAll(RegExp(r'[úùûü]'), 'u')
-        .replaceAll('ç', 'c')
-        .trim();
-  }
-
-  void _loadDemoData() {
-    final DateTime now = DateTime.now();
-
-    _cases.add(
-      SupportCase(
-        id: customerCaseId,
-        customerName: 'Cliente Demo',
-        customerDocument: '***.482.***-**',
-        planName: 'Claro Pós 50 GB + Fibra',
-        intent: 'NÃO_CLASSIFICADA',
-        intentConfidence: 0,
-        summary:
-            'Nova sessão criada. Aguardando a primeira solicitação do cliente.',
-        status: SupportCaseStatus.bot,
-        createdAt: now.subtract(const Duration(minutes: 2)),
-        updatedAt: now,
-        messages: <ChatMessage>[
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.assistant,
-            text:
-                'Olá! Eu sou o assistente Orion. Como posso ajudar com sua internet ou sua fatura hoje?',
-            sentAt: now.subtract(const Duration(minutes: 1)),
-            channel: UserChannel.appClaro,
-          ),
-        ],
-      ),
-    );
-
-    _cases.add(
-      SupportCase(
-        id: 'CX-2026-0139',
-        customerName: 'Maria Ferreira',
-        customerDocument: '***.207.***-**',
-        planName: 'Claro Controle 25 GB',
-        intent: 'CONTESTACAO_FATURA',
-        intentConfidence: 0.45,
-        summary:
-            'Cliente relata cobrança indevida na última fatura. A IA classificou a intenção com 45% de confiança e solicitou transbordo humano.',
-        status: SupportCaseStatus.waitingHuman,
-        createdAt: now.subtract(const Duration(minutes: 11)),
-        updatedAt: now.subtract(const Duration(minutes: 4)),
-        pendingAction: humanHandoffAction,
-        hasUnreadEvent: true,
-        messages: <ChatMessage>[
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.customer,
-            text: 'Quero reclamar de uma cobrança indevida na minha fatura.',
-            sentAt: now.subtract(const Duration(minutes: 11)),
-            channel: UserChannel.appClaro,
-          ),
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.assistant,
-            text:
-                'Vou transferir este atendimento para uma pessoa especialista em faturas. Seu histórico será mantido.',
-            sentAt: now.subtract(const Duration(minutes: 10)),
-            channel: UserChannel.appClaro,
-          ),
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.system,
-            text:
-                'Evento REQUIRED_HUMAN_ASSISTANCE recebido pela interface administrativa.',
-            sentAt: now.subtract(const Duration(minutes: 10)),
-            channel: UserChannel.appClaro,
-          ),
-        ],
-      ),
-    );
-
-    _cases.add(
-      SupportCase(
-        id: 'CX-2026-0136',
-        customerName: 'João Martins',
-        customerDocument: '***.915.***-**',
-        planName: 'Claro Fibra 500 Mega',
-        intent: 'CONTESTACAO_FATURA',
-        intentConfidence: 0.49,
-        summary:
-            'Cliente questiona um serviço adicional na fatura. Atendimento assumido e histórico contextualizado.',
-        status: SupportCaseStatus.inProgress,
-        createdAt: now.subtract(const Duration(minutes: 24)),
-        updatedAt: now.subtract(const Duration(minutes: 2)),
-        assignedAgent: 'Camila Rocha',
-        messages: <ChatMessage>[
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.customer,
-            text: 'Apareceu um serviço adicional que eu não contratei.',
-            sentAt: now.subtract(const Duration(minutes: 24)),
-            channel: UserChannel.webPortal,
-          ),
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.assistant,
-            text:
-                'Vou encaminhar o caso para um atendente e manter todo o histórico.',
-            sentAt: now.subtract(const Duration(minutes: 23)),
-            channel: UserChannel.webPortal,
-          ),
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.system,
-            text: 'Camila Rocha assumiu o atendimento.',
-            sentAt: now.subtract(const Duration(minutes: 6)),
-            channel: UserChannel.webPortal,
-          ),
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.agent,
-            text:
-                'Olá, João. Estou verificando a origem desse serviço adicional para você.',
-            sentAt: now.subtract(const Duration(minutes: 2)),
-            channel: UserChannel.webPortal,
-          ),
-        ],
-      ),
-    );
-
-    _cases.add(
-      SupportCase(
-        id: 'CX-2026-0128',
-        customerName: 'Paula Santos',
-        customerDocument: '***.031.***-**',
-        planName: 'Claro Fibra 350 Mega',
-        intent: 'SUPORTE_TECNICO',
-        intentConfidence: 0.96,
-        summary:
-            'Cliente autorizou o reinício do sinal e confirmou o restabelecimento da conexão.',
-        status: SupportCaseStatus.resolved,
-        createdAt: now.subtract(const Duration(hours: 2)),
-        updatedAt: now.subtract(const Duration(hours: 1, minutes: 45)),
-        messages: <ChatMessage>[
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.customer,
-            text: 'Minha internet está lenta.',
-            sentAt: now.subtract(const Duration(hours: 2)),
-            channel: UserChannel.whatsapp,
-          ),
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.assistant,
-            text:
-                'O sinal foi reiniciado. Aguarde alguns segundos e teste novamente.',
-            sentAt: now.subtract(const Duration(hours: 1, minutes: 46)),
-            channel: UserChannel.webPortal,
-          ),
-          ChatMessage(
-            id: 'MSG-${++_messageCounter}',
-            actor: ConversationActor.customer,
-            text: 'Voltou ao normal, obrigado!',
-            sentAt: now.subtract(const Duration(hours: 1, minutes: 45)),
-            channel: UserChannel.webPortal,
-          ),
-        ],
-      ),
-    );
+  @override
+  void dispose() {
+    _snapshotSub.cancel();
+    _api.dispose();
+    super.dispose();
   }
 }

@@ -1,0 +1,209 @@
+# Orion CX — local topology.
+#
+# Every AWS component of the production design has a local stand-in here:
+#   Amazon RDS        -> postgres
+#   Amazon DynamoDB   -> redis        (session/context store)
+#   Apache Kafka/MSK  -> redpanda     (same wire protocol)
+#   Amazon EKS        -> the five orion-* containers
+#   Amazon API GW     -> orion-gateway, the only service published to the host
+#   Amazon SNS        -> orion-notification (logs + WebSocket delivery)
+#
+# Only the gateway and the web frontend are reachable from the host. The four
+# internal services sit on the `orion-internal` network, which is what keeps
+# endpoints such as "create an agent account" off the public surface.
+
+name: orion-cx
+
+x-service-base: &service-base
+  build:
+    context: ./backend
+  restart: unless-stopped
+  networks: [orion-internal]
+  environment: &service-env
+    ORION_ENV: development
+    ORION_POSTGRES_URL: postgres://orion:orion@postgres:5432/orion?sslmode=disable
+    ORION_REDIS_URL: redis://redis:6379/0
+    ORION_KAFKA_BROKER: redpanda:9092
+    # Override in a .env file before exposing this stack to anyone else.
+    ORION_JWT_SECRET: ${ORION_JWT_SECRET:-orion-dev-secret-change-me}
+    ORION_CONFIDENCE_THRESHOLD: ${ORION_CONFIDENCE_THRESHOLD:-0.70}
+    ORION_AUTH_URL: http://orion-auth:8011
+    ORION_NLP_URL: http://orion-nlp:8010
+    ORION_CALLMGMT_URL: http://orion-callmgmt:8012
+    ORION_NOTIFICATION_URL: http://orion-notification:8013
+    # Optional: without it the NLP service runs its rule engine (see README).
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ORION_NLU_MODEL: ${ORION_NLU_MODEL:-claude-opus-5}
+    ORION_SEED: "false"
+
+services:
+  # --- Infrastructure --------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [orion-internal]
+    environment:
+      POSTGRES_USER: orion
+      POSTGRES_PASSWORD: orion
+      POSTGRES_DB: orion
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orion -d orion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [orion-internal]
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Redpanda speaks the Kafka protocol, so the services use the same client
+  # library they would use against Amazon MSK in production.
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    restart: unless-stopped
+    networks: [orion-internal]
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # --- ORION microservices ---------------------------------------------------
+  orion-auth:
+    <<: *service-base
+    command: ["-service=auth"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8011/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  orion-callmgmt:
+    <<: *service-base
+    command: ["-service=callmgmt"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redpanda: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8012/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  orion-nlp:
+    <<: *service-base
+    command: ["-service=nlp"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8010/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  orion-notification:
+    <<: *service-base
+    command: ["-service=notification"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redpanda: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8013/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # The only service published to the host: it plays the Amazon API Gateway role.
+  orion-gateway:
+    <<: *service-base
+    command: ["-service=gateway"]
+    networks: [orion-internal, orion-public]
+    ports:
+      - "8000:8000"
+    depends_on:
+      orion-auth: {condition: service_healthy}
+      orion-callmgmt: {condition: service_healthy}
+      orion-nlp: {condition: service_healthy}
+      orion-notification: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # --- One-shot demo seeding -------------------------------------------------
+  # Runs against the services over HTTP, exactly like any other client, then
+  # exits. It is idempotent, so restarting the stack never duplicates data.
+  orion-seed:
+    <<: *service-base
+    command: ["-service=seed"]
+    restart: "no"
+    environment:
+      <<: *service-env
+      ORION_SEED: "true"
+    depends_on:
+      orion-auth: {condition: service_healthy}
+      orion-callmgmt: {condition: service_healthy}
+
+  # --- Frontend --------------------------------------------------------------
+  orion-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        # Baked into the Flutter web bundle at build time.
+        ORION_API_URL: ${ORION_API_URL:-http://localhost:8000}
+        ORION_WS_URL: ${ORION_WS_URL:-ws://localhost:8000/ws}
+    restart: unless-stopped
+    networks: [orion-public]
+    ports:
+      - "8080:80"
+    depends_on:
+      orion-gateway: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  # Internal service-to-service traffic. Not published to the host.
+  orion-internal:
+  # Everything the browser can reach.
+  orion-public:
+
+volumes:
+  postgres-data:
+  redis-data:
+  redpanda-data:

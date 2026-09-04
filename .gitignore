@@ -1,10 +1,24 @@
+# Flutter / Dart
 .dart_tool/
 .packages
 .pub/
 build/
 .flutter-plugins
 .flutter-plugins-dependencies
+
+# Go
+backend/orion
+backend/orion.exe
+backend/bin/
+
+# Segredos e configuração local — nunca versionar
+.env
+.env.local
+*.pem
+
+# Editores e SO
 .idea/
 .vscode/
 *.iml
 .DS_Store
+Thumbs.db
