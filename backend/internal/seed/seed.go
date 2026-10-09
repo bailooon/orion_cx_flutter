@@ -40,6 +40,8 @@ var accounts = []account{
 	{email: "maria@orion.dev", name: "Maria Ferreira", document: "***.207.***-**", plan: "Claro Controle 25 GB", role: domain.RoleCustomer},
 	{email: "joao@orion.dev", name: "João Martins", document: "***.915.***-**", plan: "Claro Fibra 500 Mega", role: domain.RoleCustomer},
 	{email: "paula@orion.dev", name: "Paula Santos", document: "***.031.***-**", plan: "Claro Fibra 350 Mega", role: domain.RoleCustomer},
+	{email: "carlos@orion.dev", name: "Carlos Almeida", document: "***.664.***-**", plan: "Claro Pós 30 GB", role: domain.RoleCustomer},
+	{email: "beatriz@orion.dev", name: "Beatriz Lima", document: "***.390.***-**", plan: "Claro Fibra 500 Mega", role: domain.RoleCustomer},
 }
 
 // Run creates the demo accounts and the conversations the dashboard needs in
@@ -76,6 +78,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	if err := seedResolvedCase(ctx, callClient, users["paula@orion.dev"]); err != nil {
+		return err
+	}
+	if err := seedRatedCases(ctx, callClient, users["carlos@orion.dev"], users["beatriz@orion.dev"]); err != nil {
 		return err
 	}
 
@@ -239,4 +244,67 @@ func seedResolvedCase(ctx context.Context, client *httpx.Client, user domain.Use
 		Channel:        domain.ChannelWhatsApp,
 		FirstEvent:     "Chamado aberto pelo canal WhatsApp.",
 	}, nil)
+}
+
+// seedRatedCases gives the satisfaction dashboard something to show on first
+// load: answered surveys for one AI-resolved and one human-resolved case,
+// plus the survey of the resolved case above. All of it is demo data.
+func seedRatedCases(ctx context.Context, client *httpx.Client, carlos, beatriz domain.User) error {
+	rate := func(id string, score int, comment string) error {
+		return client.Do(ctx, "POST", "/v1/conversations/"+id+"/survey",
+			map[string]any{"score": score, "comment": comment}, nil)
+	}
+	if err := rate("CX-2026-0128", 5, "Resolveu sem eu precisar repetir nada quando troquei de canal."); err != nil {
+		return err
+	}
+
+	// Human-resolved billing question, rated 3.
+	const humanID = "CX-2026-0121"
+	if _, err := openConversation(ctx, client, humanID, carlos); err != nil {
+		return err
+	}
+	intent, confidence := "CONTESTACAO_FATURA", 0.47
+	summary := "Cliente questionou cobrança de roaming. Atendente estornou o valor."
+	waiting := domain.StatusWaitingHuman
+	if err := applyTurn(ctx, client, humanID, callsvc.Turn{
+		Messages: []callsvc.MessageInput{
+			{Actor: domain.ActorCustomer, Text: "Veio uma cobrança de roaming que eu não usei.", Channel: domain.ChannelApp},
+			{Actor: domain.ActorAssistant, Text: "Vou transferir para uma pessoa especialista em faturas.", Channel: domain.ChannelApp},
+		},
+		Intent: &intent, IntentConfidence: &confidence, Summary: &summary, Status: &waiting,
+	}); err != nil {
+		return err
+	}
+	if err := client.Do(ctx, "POST", "/v1/conversations/"+humanID+"/assign", map[string]string{"agentName": "Camila Rocha"}, nil); err != nil {
+		return err
+	}
+	if err := client.Do(ctx, "POST", "/v1/conversations/"+humanID+"/agent-messages",
+		map[string]string{"agentName": "Camila Rocha", "text": "Estornei o valor do roaming na próxima fatura."}, nil); err != nil {
+		return err
+	}
+	if err := client.Do(ctx, "POST", "/v1/conversations/"+humanID+"/resolve", nil, nil); err != nil {
+		return err
+	}
+	if err := rate(humanID, 3, "Resolveu, mas demorou para alguém responder."); err != nil {
+		return err
+	}
+
+	// AI-resolved usage question, rated 4.
+	const aiID = "CX-2026-0124"
+	if _, err := openConversation(ctx, client, aiID, beatriz); err != nil {
+		return err
+	}
+	usageIntent, usageConfidence := "CONSULTA_CONSUMO", 0.88
+	usageSummary := "Cliente consultou o consumo do plano pelo WhatsApp."
+	resolved := domain.StatusResolved
+	if err := applyTurn(ctx, client, aiID, callsvc.Turn{
+		Messages: []callsvc.MessageInput{
+			{Actor: domain.ActorCustomer, Text: "Quanto ainda tenho de franquia?", Channel: domain.ChannelWhatsApp},
+			{Actor: domain.ActorAssistant, Text: "Você já usou 31,5 GB de 50 GB (63% da franquia). O ciclo renova dia 28.", Channel: domain.ChannelWhatsApp},
+		},
+		Intent: &usageIntent, IntentConfidence: &usageConfidence, Summary: &usageSummary, Status: &resolved,
+	}); err != nil {
+		return err
+	}
+	return rate(aiID, 4, "")
 }

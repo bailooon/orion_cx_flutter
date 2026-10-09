@@ -5,6 +5,8 @@ Documento de arquitetura do protótipo funcional **Orion CX**, plataforma de ate
 - **Visão de produção**: seção 2 — a arquitetura-alvo em AWS, definida no documento de visão do projeto.
 - **Protótipo**: seção 3 — o que foi efetivamente construído e roda localmente.
 - **Fluxos**: seção 5 — os dois casos de aceitação, em diagrama de sequência.
+- **Agentes de IA, segurança, fila e double check**: seção 12.
+- **Pesquisa de satisfação e dashboards**: seção 13.
 
 ---
 
@@ -524,12 +526,13 @@ Cada dependência tem um comportamento definido em caso de falha:
 │   │   ├── config/             # configuração por ambiente
 │   │   ├── authsvc/            # ORION Authenticator
 │   │   ├── nlpsvc/             # ORION Motor NLP/IA (Claude + regras)
+│   │   ├── agents/             # agentes de IA, ferramentas, guarda de segurança
 │   │   ├── callsvc/            # ORION Call Management
 │   │   ├── notifysvc/          # ORION Notification
 │   │   ├── gatewaysvc/         # ORION Gateway (orquestração e políticas)
 │   │   ├── seed/               # carga de demonstração idempotente
 │   │   ├── e2e/                # testes dos dois fluxos de aceitação
-│   │   └── platform/           # db, cache, bus, httpx, wsx, security, logging
+│   │   └── platform/           # db, cache, bus, httpx, wsx, security, logging, queue
 │   └── Dockerfile
 │
 └── lib/                        # frontend Flutter
@@ -537,3 +540,144 @@ Cada dependência tem um comportamento definido em caso de falha:
     ├── screens/                # login, seleção, portal do cliente, dashboard, chamados
     └── widgets/                # componentes compartilhados
 ```
+
+---
+
+## 12. Agentes de IA com function calling
+
+A partir da v1.1, a resposta automática não é mais um texto fixo por intenção: cada intenção automatizável é entregue a um **agente de IA especializado**, que resolve o pedido chamando **ferramentas** sobre os sistemas internos da Claro (simulados em `internal/agents/systems.go`).
+
+```mermaid
+flowchart LR
+    msg["Mensagem do cliente"] --> guard{"Guarda de segurança<br/>InspectInput"}
+    guard -->|bloqueada| refusal["Resposta segura<br/>+ auditoria"]
+    guard -->|ok| nlu["ORION NLP<br/>intenção + confiança"]
+    nlu --> route{"decide()<br/>2 guardas de roteamento"}
+    route -->|baixa confiança ou<br/>intenção sensível| human["Fila humana"]
+    route -->|automatizável| queue[["Fila dos agentes<br/>(limiter)"]]
+    queue -->|saturada| fallback["Resposta de contingência<br/>+ auditoria"]
+    queue --> agent{"Agente da intenção"}
+    agent --> tec["Suporte Técnico"]
+    agent --> fin["Financeiro"]
+    agent --> com["Comercial"]
+    agent --> atd["Atendimento"]
+    tec & fin & com & atd --> tools["Ferramentas<br/>allowlist por agente"]
+    tools -->|leitura| reply["Resposta verificada<br/>VerifyReply"]
+    tools -->|ação sensível| confirm["Pede confirmação<br/>(double check)"]
+```
+
+### 12.1 Os agentes e suas ferramentas
+
+| Agente | Intenções | Ferramentas (allowlist) |
+|---|---|---|
+| **Suporte Técnico** | `SUPORTE_TECNICO` | `diagnosticar_conexao`, `reiniciar_sinal`\*, `consultar_chamados`, `transferir_para_humano` |
+| **Financeiro** | `SEGUNDA_VIA_FATURA` | `consultar_fatura`, `gerar_segunda_via`, `transferir_para_humano` |
+| **Comercial** | `CONSULTA_CONSUMO`, `UPGRADE_PLANO` | `consultar_consumo`, `listar_ofertas_upgrade`, `alterar_plano`\*, `transferir_para_humano` |
+| **Atendimento** | `STATUS_CHAMADO` | `consultar_chamados`, `transferir_para_humano` |
+
+\* Ferramenta **sensível**: nunca executa sem a confirmação do cliente (seção 12.3).
+
+`CONTESTACAO_FATURA` e `CANCELAMENTO` continuam fora do alcance dos agentes: vão direto para uma pessoa (seção 4.1).
+
+### 12.2 Dois motores, mesmas regras
+
+| Motor | Quando roda | Como decide |
+|---|---|---|
+| **Claude com function calling** (`agents/llm.go`) | Com `ANTHROPIC_API_KEY` | O modelo escolhe as ferramentas da allowlist do agente; o runtime valida e executa cada chamada e devolve o resultado, até a resposta final (máx. 4 rodadas, 5 chamadas por turno) |
+| **Plano determinístico** (`agents/runtime.go`) | Sem chave, ou se o modelo falhar/estourar o tempo | Sequência fixa e auditável de ferramentas por intenção |
+
+Os dois passam pelo **mesmo** `invoke()`: allowlist, validação de argumentos, limite de chamadas e bloqueio de ferramentas sensíveis valem igualmente para o modelo e para o plano fixo. A segurança não depende do modelo se comportar.
+
+### 12.3 Double check
+
+Uma ação que muda algo na conta do cliente (`reiniciar_sinal`, `alterar_plano`) passa por **três verificações**:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Cliente
+    participant GW as ORION Gateway
+    participant AG as Agente Comercial
+    participant RD as Redis (contexto)
+    participant AU as Auditoria
+
+    C->>GW: "quero fazer upgrade do meu plano"
+    GW->>AG: Handle (via fila)
+    AG->>AG: listar_ofertas_upgrade (leitura, executa)
+    AG-->>GW: alterar_plano(oferta_id) é sensível → NÃO executa
+    GW->>RD: guarda ferramenta + argumentos + horário
+    GW->>AU: confirmation_requested
+    GW-->>C: "Posso alterar seu plano para ...? Confirma?"
+
+    C->>GW: "sim"
+    Note over GW: 1ª verificação — o cliente confirmou
+    GW->>RD: lê a ação pendente
+    Note over GW: 2ª verificação — servidor revalida:<br/>dono da conversa · ainda com a IA ·<br/>ação pendente = ferramenta guardada ·<br/>confirmação dentro do prazo (15 min)
+    GW->>AG: ExecuteConfirmed
+    Note over AG: 3ª verificação — a ferramenta revalida<br/>os argumentos (a oferta ainda existe?)
+    AG-->>GW: plano alterado
+    GW->>AU: tool_call ok + confirmation_accepted
+    GW-->>C: "Pronto! Seu plano foi alterado..."
+```
+
+Se qualquer verificação falhar, nada executa: o cliente recebe uma resposta explicando, e a auditoria registra `confirmation_rejected`.
+
+**Verificação da resposta da IA** (`VerifyReply`). Antes de qualquer texto escrito pelo modelo chegar ao cliente, ele é checado:
+
+- **Ação alucinada** — se o texto diz "o sinal foi reiniciado" ou "seu plano foi alterado" mas a ferramenta não rodou neste turno, a resposta é trocada pelo texto determinístico.
+- **Vazamento de instruções** — fragmentos do prompt de sistema bloqueiam a resposta.
+- **Dados pessoais** — CPF, e-mail e telefone são mascarados.
+
+Toda correção vira `reply_corrected` na auditoria.
+
+### 12.4 Segurança do chatbot
+
+| Ameaça | Defesa | Onde |
+|---|---|---|
+| Prompt injection ("ignore as instruções", "você agora é", tags falsas de sistema) | Detecção por padrões no texto normalizado, **antes** de qualquer modelo; a mensagem bloqueada não é gravada, para não voltar ao modelo como histórico | `agents/guard.go` |
+| Caracteres invisíveis escondendo instruções | Remoção de controles, zero-width e overrides bidirecionais | `stripControl` |
+| Agir sobre a conta de outro cliente | Nenhuma ferramenta aceita id de cliente: o alvo é sempre o `Principal` do token. Argumento desconhecido (ex.: `user_id`) é rejeitado | `tools.go`, `ValidateArgs` |
+| Modelo confuso ou manipulado chamando ferramenta indevida | Allowlist por agente (menor privilégio) + valores restritos validados no servidor (ex.: `oferta_id` só da lista do cliente) | `invoke`, `Param.Enum` |
+| Loop de chamadas | Máx. 5 chamadas de ferramenta por turno e 4 rodadas com o modelo | `MaxToolCallsPerTurn`, `maxModelRounds` |
+| Flood de mensagens | Token bucket por cliente (30/min, rajada de 10), resposta 429 | `gatewaysvc/ratelimit.go` |
+| Texto do cliente lido como instrução | Mensagem enviada ao modelo entre `<mensagem_do_cliente>` e marcada como dado não confiável no prompt de sistema | `agents/llm.go` |
+
+### 12.5 Fila para não sobrecarregar os agentes
+
+`internal/platform/queue` é um limitador de admissão com três parâmetros: **capacidade** (chamadas simultâneas), **tamanho máximo da fila** e **tempo máximo de espera**. Há duas instâncias: uma na frente dos agentes (gateway) e outra na frente do modelo de classificação (NLP).
+
+| Situação | Comportamento |
+|---|---|
+| Vaga livre | Executa na hora |
+| Sem vaga, fila com espaço | Espera até `ORION_AGENT_QUEUE_TIMEOUT` |
+| Fila cheia ou espera esgotada | **Descarta** (load shedding): o cliente recebe a resposta de contingência sem ferramentas, e o evento `queue_shed` vai para o dashboard |
+
+Descartar é deliberado: numa rajada, enfileirar tudo faria todas as requisições estourarem o tempo juntas. Melhor uma resposta simples agora do que nenhuma resposta. Os contadores (em execução, aguardando, processados, descartados, pico, espera média) aparecem no dashboard de Indicadores.
+
+## 13. Pesquisa de satisfação e dashboards
+
+### 13.1 Pesquisa de satisfação (CSAT)
+
+Quando um atendimento é concluído — pela IA ou por uma pessoa —, o chat do cliente mostra a pesquisa: nota de 1 a 5 e comentário opcional. A resposta fica na própria conversa (`satisfaction_score`, `satisfaction_comment`, `rated_at`, migration `0002`).
+
+| Regra | Por quê |
+|---|---|
+| Só conversa **concluída** pode ser avaliada | Avaliar um atendimento em andamento mede outra coisa |
+| Só o **cliente atendido** avalia (403 para os demais) | Evita manipulação da métrica |
+| **Uma** resposta por conversa (409 na segunda) | A condição está no `WHERE` do `UPDATE`, então duas respostas simultâneas não passam juntas |
+| Recarregar a página mostra a conversa concluída, não uma vazia | Senão a pesquisa sumiria antes de ser respondida |
+| "Novo atendimento" abre uma conversa nova | Nunca apaga o histórico avaliado |
+
+### 13.2 Dashboards
+
+Dois painéis no dashboard do atendente, atualizados a cada 5 segundos via `GET /api/admin/dashboard` (somente perfil atendente):
+
+**Indicadores** — atendimentos, **taxa de automação pela IA** (concluídos sem humano), taxa de transbordo, tempo médio de atendimento, confiança média, jornadas multicanal, intenções, canais, chamados por status; filas dos agentes e do NLU; uso de ferramentas por agente; e a seção de **segurança e double check** com a trilha de auditoria recente.
+
+**Satisfação** — CSAT (notas 4–5), nota média, índice tipo NPS (5 menos 1–3), taxa de resposta, distribuição das notas, **IA × atendimento humano**, série dos últimos 7 dias, recortes por intenção e por atendente, e comentários recentes com apenas o primeiro nome do cliente (LGPD).
+
+Os agregados são calculados por varredura completa em `callsvc/analytics.go` — aceitável nesta escala. Em produção, viram um modelo de leitura alimentado pelo barramento de eventos (`SURVEY_SUBMITTED`, `CONVERSATION_RESOLVED`) em views materializadas ou num armazém analítico.
+
+### 13.3 Trilha de auditoria da IA
+
+Cada decisão da camada de IA é gravada em `calls.ai_audit`: chamada de ferramenta (ok, erro, bloqueada), bloqueio de segurança, limite de mensagens, descarte por fila, confirmação pedida/aceita/recusada/barrada e resposta corrigida. É a evidência de que os agentes só fizeram o que podiam fazer — e o que alimenta a seção de IA dos dashboards.

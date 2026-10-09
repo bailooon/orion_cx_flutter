@@ -31,6 +31,7 @@ func (s *Service) Routes() http.Handler {
 		sub.Post("/{id}/resolve", s.handleResolve)
 		sub.Post("/{id}/mark-read", s.handleMarkRead)
 		sub.Post("/{id}/reset", s.handleReset)
+		sub.Post("/{id}/survey", s.handleSurvey)
 	})
 
 	router.Route("/v1/tickets", func(sub chi.Router) {
@@ -40,6 +41,8 @@ func (s *Service) Routes() http.Handler {
 		sub.Patch("/{id}", s.handleUpdateTicket)
 	})
 
+	router.Post("/v1/audit", s.handleAudit)
+	router.Get("/v1/analytics", s.handleAnalytics)
 	router.Delete("/v1/users/{userId}/data", s.handlePurgeUser)
 
 	return router
@@ -215,4 +218,45 @@ func (s *Service) handlePurgeUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "purged"})
+}
+
+type surveyInput struct {
+	Score   int    `json:"score"`
+	Comment string `json:"comment"`
+}
+
+func (s *Service) handleSurvey(w http.ResponseWriter, r *http.Request) {
+	var input surveyInput
+	if err := httpx.DecodeJSON(r, &input); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	conversation, err := s.Rate(r.Context(), chi.URLParam(r, "id"), input.Score, input.Comment)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, conversation)
+}
+
+func (s *Service) handleAudit(w http.ResponseWriter, r *http.Request) {
+	var entries []domain.AuditEntry
+	if err := httpx.DecodeJSON(r, &entries); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if err := s.RecordAudit(r.Context(), entries); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusAccepted, map[string]int{"recorded": len(entries)})
+}
+
+func (s *Service) handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	analytics, err := s.Analytics(r.Context())
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, analytics)
 }

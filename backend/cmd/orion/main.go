@@ -32,6 +32,7 @@ import (
 	"github.com/orion-cx/orion-backend/internal/platform/db"
 	"github.com/orion-cx/orion-backend/internal/platform/httpx"
 	"github.com/orion-cx/orion-backend/internal/platform/logging"
+	"github.com/orion-cx/orion-backend/internal/platform/queue"
 	"github.com/orion-cx/orion-backend/internal/platform/security"
 	"github.com/orion-cx/orion-backend/internal/seed"
 )
@@ -217,8 +218,9 @@ func (r *runtime) build(ctx context.Context, service string) ([]*http.Server, er
 	}
 
 	if all || service == config.ServiceNLP {
-		nlp := nlpsvc.NewService(
+		nlp := nlpsvc.NewServiceWithQueue(
 			nlpsvc.NewLLMClassifier(r.cfg.AnthropicAPIKey, r.cfg.AnthropicModel, r.cfg.NLUTimeout),
+			queue.New("nlu", r.cfg.NLUMaxConcurrency, r.cfg.NLUMaxQueue, r.cfg.AgentQueueTimeout),
 			r.logger,
 		)
 		servers = append(servers, r.server(r.cfg.NLPPort, nlp.Routes()))

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'api_client.dart';
+import 'dashboard.dart';
 import 'models.dart';
 
 /// Remote-state client for the Orion CX platform.
@@ -63,6 +64,19 @@ class OrionController extends ChangeNotifier {
   bool isAuthenticating = false;
   String? authError;
   UserChannel currentChannel = UserChannel.appClaro;
+
+  /// Latest dashboard payload (agents only).
+  DashboardData? dashboard;
+  bool dashboardLoading = false;
+  String? dashboardError;
+  DateTime? dashboardUpdatedAt;
+
+  /// Last error of a survey submission, shown under the survey card.
+  String? surveyError;
+  bool surveySubmitting = false;
+
+  /// Last error of a customer message (e.g. rate limit), shown in the chat.
+  String? messageError;
 
   /// Confidence below which the gateway hands a conversation to a person.
   /// Reported by the backend so the UI never hardcodes a policy value.
@@ -330,11 +344,13 @@ class OrionController extends ChangeNotifier {
       return;
     }
     isBotTyping = true;
+    messageError = null;
     notifyListeners();
     try {
       await _api.sendCustomerMessage(_activeCaseId!, text, currentChannel);
       _recommendations = await _api.loadRecommendations();
     } on ApiException catch (error) {
+      messageError = error.message;
       debugPrint('Orion: falha ao enviar mensagem: ${error.message}');
     } finally {
       isBotTyping = false;
@@ -342,10 +358,13 @@ class OrionController extends ChangeNotifier {
     }
   }
 
+  /// Confirms the pending action (restart or any CONFIRM_* change). The
+  /// backend re-verifies the request before executing it (double check).
   Future<void> confirmRestart() async {
     final SupportCase item = customerCase;
     if (item.pendingAction != restartAction &&
-        item.pendingAction != continueAction) {
+        item.pendingAction != continueAction &&
+        !item.awaitsConfirmation) {
       return;
     }
     await _runCustomerAction(
@@ -364,7 +383,8 @@ class OrionController extends ChangeNotifier {
   Future<void> declineRestart() async {
     final SupportCase item = customerCase;
     if (item.pendingAction != restartAction &&
-        item.pendingAction != continueAction) {
+        item.pendingAction != continueAction &&
+        !item.awaitsConfirmation) {
       return;
     }
     try {
@@ -446,7 +466,54 @@ class OrionController extends ChangeNotifier {
     }
   }
 
+  void clearMessageError() {
+    messageError = null;
+    notifyListeners();
+  }
+
+  /// Sends the satisfaction survey of the customer's resolved conversation.
+  Future<bool> submitSurvey(int score, String comment) async {
+    final String? caseId = _activeCaseId;
+    if (caseId == null || surveySubmitting) {
+      return false;
+    }
+    surveySubmitting = true;
+    surveyError = null;
+    notifyListeners();
+    try {
+      await _api.submitSurvey(caseId, score, comment.trim());
+      await refresh();
+      return true;
+    } on ApiException catch (error) {
+      surveyError = error.message;
+      return false;
+    } finally {
+      surveySubmitting = false;
+      notifyListeners();
+    }
+  }
+
   // --- agent actions ---------------------------------------------------------
+
+  /// Loads the dashboards. Called when a dashboard page opens and on a timer
+  /// while it stays open.
+  Future<void> loadDashboard() async {
+    if (!isAgent || dashboardLoading) {
+      return;
+    }
+    dashboardLoading = true;
+    notifyListeners();
+    try {
+      dashboard = DashboardData.fromJson(await _api.loadDashboard());
+      dashboardError = null;
+      dashboardUpdatedAt = DateTime.now();
+    } on ApiException catch (error) {
+      dashboardError = error.message;
+    } finally {
+      dashboardLoading = false;
+      notifyListeners();
+    }
+  }
 
   /// Assigns a conversation to the signed-in agent. Works both for the human
   /// queue and for a conversation the assistant is still handling, which is

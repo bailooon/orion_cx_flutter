@@ -53,6 +53,12 @@ abstract class OrionApi {
   Future<void> markNotificationRead(String notificationId);
   Future<void> markAllNotificationsRead();
   Future<void> forgetMe();
+
+  /// Answers the satisfaction survey of a resolved conversation.
+  Future<void> submitSurvey(String caseId, int score, String comment);
+
+  /// Agent dashboards: operation, satisfaction, AI agents and security.
+  Future<Map<String, dynamic>> loadDashboard();
   void dispose();
 }
 
@@ -345,6 +351,19 @@ class ApiClient implements OrionApi {
   @override
   Future<void> forgetMe() {
     return _send('DELETE', '/api/auth/me');
+  }
+
+  @override
+  Future<void> submitSurvey(String caseId, int score, String comment) {
+    return _send('POST', '/api/cases/$caseId/survey', <String, dynamic>{
+      'score': score,
+      'comment': comment,
+    });
+  }
+
+  @override
+  Future<Map<String, dynamic>> loadDashboard() {
+    return _send('GET', '/api/admin/dashboard');
   }
 
   @override

@@ -58,6 +58,23 @@ type Config struct {
 	AnthropicModel  string
 	NLUTimeout      time.Duration
 
+	// AI agents: model, per-turn timeout and the queue that protects them.
+	AgentModel          string
+	AgentTimeout        time.Duration
+	AgentMaxConcurrency int
+	AgentMaxQueue       int
+	AgentQueueTimeout   time.Duration
+	// NLU queue, in front of the classification model.
+	NLUMaxConcurrency int
+	NLUMaxQueue       int
+
+	// Per-customer message rate limit (chatbot abuse protection).
+	RateLimitPerMinute int
+	RateLimitBurst     int
+	// ConfirmationTTL is how long a sensitive action may wait for the
+	// customer's "yes" before the double check refuses it.
+	ConfirmationTTL time.Duration
+
 	// InternalTimeout / InternalRetries bound every service-to-service call so
 	// one slow dependency cannot blow the 2s budget (RNF001, RNF007).
 	InternalTimeout time.Duration
@@ -96,6 +113,18 @@ func Load(service string) (Config, error) {
 		AnthropicAPIKey: env("ANTHROPIC_API_KEY", ""),
 		AnthropicModel:  env("ORION_NLU_MODEL", "claude-opus-5"),
 		NLUTimeout:      envDuration("ORION_NLU_TIMEOUT", 4*time.Second),
+
+		AgentModel:          env("ORION_AGENT_MODEL", "claude-opus-5"),
+		AgentTimeout:        envDuration("ORION_AGENT_TIMEOUT", 8*time.Second),
+		AgentMaxConcurrency: envInt("ORION_AGENT_MAX_CONCURRENCY", 8),
+		AgentMaxQueue:       envInt("ORION_AGENT_MAX_QUEUE", 32),
+		AgentQueueTimeout:   envDuration("ORION_AGENT_QUEUE_TIMEOUT", 2*time.Second),
+		NLUMaxConcurrency:   envInt("ORION_NLU_MAX_CONCURRENCY", 8),
+		NLUMaxQueue:         envInt("ORION_NLU_MAX_QUEUE", 32),
+
+		RateLimitPerMinute: envInt("ORION_RATE_LIMIT_PER_MINUTE", 30),
+		RateLimitBurst:     envInt("ORION_RATE_LIMIT_BURST", 10),
+		ConfirmationTTL:    envDuration("ORION_CONFIRMATION_TTL", 15*time.Minute),
 
 		InternalTimeout: envDuration("ORION_INTERNAL_TIMEOUT", 3*time.Second),
 		InternalRetries: envInt("ORION_INTERNAL_RETRIES", 2),

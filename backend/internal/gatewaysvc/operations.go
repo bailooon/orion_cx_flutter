@@ -72,6 +72,20 @@ func (s *Service) ResetConversation(ctx context.Context, principal security.Prin
 	if conversation.UserID != principal.UserID && principal.Role != domain.RoleAgent {
 		return domain.Conversation{}, httpx.ErrForbidden
 	}
+	// A closed attendance is history (and may carry a survey): "new
+	// attendance" opens a fresh conversation instead of wiping it.
+	if conversation.Status == domain.StatusResolved && conversation.UserID == principal.UserID {
+		fresh, err := s.openFreshConversation(ctx, principal, domain.ChannelApp)
+		if err != nil {
+			return domain.Conversation{}, err
+		}
+		greeted, err := s.calls.ApplyTurn(ctx, fresh.ID, turnGreeting(domain.ChannelApp))
+		if err != nil {
+			greeted = fresh
+		}
+		s.broadcastSnapshots(ctx)
+		return greeted, nil
+	}
 	reset, err := s.calls.Reset(ctx, conversationID)
 	if err != nil {
 		return domain.Conversation{}, err

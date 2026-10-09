@@ -4,6 +4,7 @@ package callsvc
 
 import (
 	"context"
+	"time"
 
 	"github.com/orion-cx/orion-backend/internal/domain"
 )
@@ -73,6 +74,14 @@ type Repository interface {
 	ListTickets(ctx context.Context, userID string) ([]domain.Ticket, error)
 	TicketsByConversation(ctx context.Context, conversationID string) ([]domain.Ticket, error)
 	UpdateTicket(ctx context.Context, id string, update TicketUpdate) (domain.Ticket, error)
+
+	// RateConversation stores the satisfaction survey of a resolved
+	// conversation. It fails if the conversation is not resolved or was
+	// already rated.
+	RateConversation(ctx context.Context, id string, score int, comment string) (domain.Conversation, error)
+
+	RecordAudit(ctx context.Context, entries []domain.AuditEntry) error
+	ListAudit(ctx context.Context, since time.Time, limit int) ([]domain.AuditEntry, error)
 
 	// PurgeUser deletes every conversation, message and ticket of a user, used
 	// by the LGPD erasure endpoint.

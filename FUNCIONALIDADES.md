@@ -164,6 +164,53 @@ O ORION Notification **consome eventos do barramento** — não é chamado por n
 
 ---
 
+## Funcionalidades da v1.1
+
+Detalhamento técnico nas seções 12 e 13 de [ARQUITETURA.md](ARQUITETURA.md#12-agentes-de-ia-com-function-calling).
+
+### Agentes de IA com function calling
+
+**Onde:** [`internal/agents`](backend/internal/agents) — [`catalog.go`](backend/internal/agents/catalog.go), [`tools.go`](backend/internal/agents/tools.go), [`llm.go`](backend/internal/agents/llm.go), [`runtime.go`](backend/internal/agents/runtime.go)
+
+Quatro agentes especializados (Suporte Técnico, Financeiro, Comercial, Atendimento) resolvem o pedido chamando ferramentas sobre os sistemas da Claro: diagnóstico de rede, fatura, segunda via, consumo, ofertas, alteração de plano e chamados. Com `ANTHROPIC_API_KEY`, o Claude escolhe as ferramentas (function calling, SDK oficial); sem ela, um plano determinístico usa as mesmas ferramentas.
+
+**Por que assim:**
+- **Agentes especializados com allowlist** — o Agente Financeiro não alcança o reinício de modem. Um agente confuso ou manipulado só consegue fazer o que seu domínio permite.
+- **O modelo nunca escolhe o cliente** — nenhuma ferramenta recebe id de cliente; o alvo é sempre quem está autenticado. Um prompt que tente apontar para outra conta não tem por onde.
+- **Mesmas regras para os dois motores** — toda chamada passa pelo mesmo `invoke()`. A segurança não depende do modelo obedecer ao prompt.
+
+### Segurança do chatbot
+
+**Onde:** [`agents/guard.go`](backend/internal/agents/guard.go), [`gatewaysvc/ratelimit.go`](backend/internal/gatewaysvc/ratelimit.go)
+
+Detecção de prompt injection antes de qualquer modelo, remoção de caracteres invisíveis, limite de 1.000 caracteres, rate limit por cliente, validação de argumentos no servidor, limite de chamadas por turno e verificação da resposta do modelo (dados pessoais, vazamento de instruções, ação alucinada).
+
+**Por que assim:** a mensagem bloqueada **não é gravada** — se fosse, voltaria ao modelo como histórico no turno seguinte e o ataque teria uma segunda chance. A resposta ao cliente não diz qual regra disparou, para a guarda não poder ser sondada.
+
+### Double check
+
+**Onde:** [`gatewaysvc/agentflow.go`](backend/internal/gatewaysvc/agentflow.go) (`confirmPending`), [`agents/runtime.go`](backend/internal/agents/runtime.go) (`ExecuteConfirmed`), [`agents/guard.go`](backend/internal/agents/guard.go) (`VerifyReply`)
+
+Ações que mudam algo na conta exigem: (1) confirmação explícita do cliente; (2) reverificação no servidor — dono da conversa, conversa ainda com a IA, ação pendente igual à ferramenta guardada, prazo de 15 minutos; (3) revalidação dos argumentos pela própria ferramenta na hora de executar. Além disso, toda resposta escrita pelo modelo é verificada antes de ser enviada.
+
+**Por que assim:** um "sim" sozinho não basta — entre a pergunta e a resposta, a conversa pode ter ido para um humano, a oferta pode ter expirado ou o contexto pode ter sido perdido. Cada uma dessas situações tem um teste.
+
+### Fila dos agentes de IA
+
+**Onde:** [`internal/platform/queue`](backend/internal/platform/queue/limiter.go)
+
+Limitador com capacidade, fila máxima e tempo de espera, na frente dos agentes e do modelo de classificação. Excesso é **descartado** e respondido em contingência, nunca empilhado até estourar o tempo.
+
+### Pesquisa de satisfação e dashboards
+
+**Onde:** [`callsvc/analytics.go`](backend/internal/callsvc/analytics.go), [`lib/widgets/satisfaction_survey.dart`](lib/widgets/satisfaction_survey.dart), [`lib/screens/analytics_dashboard.dart`](lib/screens/analytics_dashboard.dart)
+
+Pesquisa de 1 a 5 estrelas ao fim de cada atendimento. Dois dashboards para o atendente: **Indicadores** (automação, transbordo, tempo médio, intenções, canais, filas, agentes, segurança e auditoria) e **Satisfação** (CSAT, NPS, IA × humano, série de 7 dias, recortes e comentários).
+
+**Por que assim:** o recorte **IA × atendimento humano** é a pergunta de negócio do projeto — a automação está resolvendo bem ou só resolvendo rápido? O dashboard responde com dados dos próprios clientes.
+
+---
+
 ## Requisitos não funcionais
 
 ### RNF001 — Resposta abaixo de 2 s
@@ -274,6 +321,20 @@ Executar com `cd backend && go test ./...`:
 | `TestFlowB_LowConfidenceHumanHandoff` | Fluxo B inteiro: confiança abaixo do limiar, transbordo, fila no dashboard, cliente barrado com 403, atribuição, resposta manual no canal de origem, encerramento e notificações |
 | `TestAgentCanInterveneInAutomatedConversation` | O atendente entra numa conversa que ainda está com a IA, o histórico é preservado e a ação pendente do assistente é descartada |
 | `TestResolvedConversationCannotBeAssigned` | Conversa concluída não volta para atendimento; conversa já atribuída não é reatribuída |
+| `TestTechnicalAgentDiagnosesThenAsksBeforeRestarting` | O agente diagnostica (ferramenta de leitura) e só pergunta antes de reiniciar (ferramenta sensível) |
+| `TestAgentCannotCallToolsOutsideItsAllowlist` | O Agente Financeiro não alcança o reinício de modem (menor privilégio) |
+| `TestToolArgumentsAreValidatedServerSide` | Oferta inexistente, argumento extra (`user_id`) ou ausente são barrados |
+| `TestDoubleCheckPlanChange` | Nada muda até o "sim"; a execução confirmada é auditada e a intenção original é preservada |
+| `TestDecliningLeavesEverythingUntouched` | Recusar limpa a pendência sem alterar nada |
+| `TestExecuteConfirmedRunsOnlySensitiveTools` | O caminho de confirmação só executa ferramentas sensíveis e revalida argumentos |
+| `TestVerifyReplyCatchesHallucinatedActions` | Resposta que afirma ação não executada, vaza instruções ou expõe dado pessoal é corrigida |
+| `TestPromptInjectionIsBlocked` | Injeção bloqueada antes da IA, sem gravar o conteúdo, com evento de segurança no dashboard |
+| `TestInspectInputBlocksInjection` | Seis padrões de ataque bloqueados sem barrar mensagens legítimas |
+| `TestRateLimitPerCustomer` | Rajada de mensagens recebe 429 |
+| `TestLimiterShedsWhenQueueIsFull`, `TestSaturatedQueueShedsInsteadOfWaiting` | Fila cheia descarta na hora em vez de travar |
+| `TestSatisfactionSurvey` | Regras da pesquisa (só concluída, só o próprio cliente, uma vez, nota 1–5) e agregados de CSAT |
+| `TestSurveyStaysVisibleAndNewAttendanceKeepsHistory` | A pesquisa não some ao recarregar e "novo atendimento" não apaga o histórico avaliado |
+| `TestDashboardIsAgentOnly` | Cliente recebe 403 no dashboard |
 | `TestDashboardReceivesHandoffInRealTime` | O dashboard recebe o transbordo pelo WebSocket, sem polling e sem recarregar, já com resumo da IA e confiança abaixo do limiar |
 | `TestWebSocketRequiresAValidToken` | O canal de tempo real não é uma porta sem autenticação: handshake sem token ou com token inválido devolve 401 |
 | `TestCustomerSocketOnlySeesOwnConversations` | Um socket de cliente nunca recebe a conversa de outro cliente |

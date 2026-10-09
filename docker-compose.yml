@@ -34,6 +34,10 @@ x-service-base: &service-base
     # Optional: without it the NLP service runs its rule engine (see README).
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ORION_NLU_MODEL: ${ORION_NLU_MODEL:-claude-opus-5}
+    ORION_AGENT_MODEL: ${ORION_AGENT_MODEL:-claude-opus-5}
+    ORION_AGENT_MAX_CONCURRENCY: ${ORION_AGENT_MAX_CONCURRENCY:-8}
+    ORION_AGENT_MAX_QUEUE: ${ORION_AGENT_MAX_QUEUE:-32}
+    ORION_RATE_LIMIT_PER_MINUTE: ${ORION_RATE_LIMIT_PER_MINUTE:-30}
     ORION_SEED: "false"
 
 services:

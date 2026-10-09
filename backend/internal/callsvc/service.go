@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/orion-cx/orion-backend/internal/domain"
 	"github.com/orion-cx/orion-backend/internal/platform/bus"
 	"github.com/orion-cx/orion-backend/internal/platform/httpx"
@@ -318,6 +320,43 @@ func (s *Service) syncTickets(ctx context.Context, conversation domain.Conversat
 		}
 	}
 	return nil
+}
+
+// Rate records the satisfaction survey of a resolved conversation.
+func (s *Service) Rate(ctx context.Context, id string, score int, comment string) (domain.Conversation, error) {
+	if score < 1 || score > 5 {
+		return domain.Conversation{}, httpx.BadRequest("A nota deve ser de 1 a 5.")
+	}
+	comment = strings.TrimSpace(comment)
+	if len([]rune(comment)) > 500 {
+		return domain.Conversation{}, httpx.BadRequest("O comentário pode ter no máximo 500 caracteres.")
+	}
+	conversation, err := s.repo.RateConversation(ctx, id, score, comment)
+	if err != nil {
+		return domain.Conversation{}, err
+	}
+	s.publish(ctx, bus.EventSurveySubmitted, conversation, map[string]any{
+		"score":      score,
+		"resolvedBy": conversation.ResolvedBy(),
+	})
+	return conversation, nil
+}
+
+// RecordAudit stores AI audit entries, stamping ids and timestamps.
+func (s *Service) RecordAudit(ctx context.Context, entries []domain.AuditEntry) error {
+	now := time.Now().UTC()
+	for index := range entries {
+		if entries[index].ID == "" {
+			entries[index].ID = "AUD-" + uuid.NewString()[:12]
+		}
+		if entries[index].CreatedAt.IsZero() {
+			entries[index].CreatedAt = now
+		}
+		if len(entries[index].Detail) > 300 {
+			entries[index].Detail = entries[index].Detail[:300]
+		}
+	}
+	return s.repo.RecordAudit(ctx, entries)
 }
 
 // PurgeUser erases a customer's operational data (LGPD).

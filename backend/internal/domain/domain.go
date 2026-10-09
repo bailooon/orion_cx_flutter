@@ -119,8 +119,51 @@ type Conversation struct {
 	HasUnreadEvent   bool               `json:"hasUnreadEvent"`
 	CreatedAt        time.Time          `json:"createdAt"`
 	UpdatedAt        time.Time          `json:"updatedAt"`
-	Messages         []Message          `json:"messages"`
+	// ResolvedAt is set the first time the conversation is resolved; it is the
+	// basis of the handling-time metric.
+	ResolvedAt *time.Time `json:"resolvedAt"`
+	// Satisfaction survey answered by the customer after resolution.
+	SatisfactionScore   *int       `json:"satisfactionScore"`
+	SatisfactionComment *string    `json:"satisfactionComment"`
+	RatedAt             *time.Time `json:"ratedAt"`
+	Messages            []Message  `json:"messages"`
 }
+
+// ResolvedBy tells whether a person took part in a resolved conversation.
+func (c Conversation) ResolvedBy() string {
+	if c.AssignedAgent != nil {
+		return "humano"
+	}
+	return "ia"
+}
+
+// AuditEntry records one decision of the AI layer: a tool call, a blocked
+// message, a shed request or a double-check outcome.
+type AuditEntry struct {
+	ID             string    `json:"id"`
+	ConversationID string    `json:"conversationId"`
+	UserID         string    `json:"userId"`
+	Agent          string    `json:"agent"`
+	Kind           string    `json:"kind"`
+	Tool           string    `json:"tool"`
+	Status         string    `json:"status"`
+	Detail         string    `json:"detail"`
+	LatencyMs      int64     `json:"latencyMs"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+// Audit kinds.
+const (
+	AuditToolCall         = "tool_call"
+	AuditSecurityBlock    = "security_block"
+	AuditQueueShed        = "queue_shed"
+	AuditRateLimited      = "rate_limited"
+	AuditConfirmRequested = "confirmation_requested"
+	AuditConfirmAccepted  = "confirmation_accepted"
+	AuditConfirmDeclined  = "confirmation_declined"
+	AuditConfirmRejected  = "confirmation_rejected"
+	AuditReplyCorrected   = "reply_corrected"
+)
 
 // LastChannel is the channel of the most recent message, used to reply to the
 // customer on the same channel they last used (flow B, step 6).
@@ -194,6 +237,12 @@ type SessionContext struct {
 	// UnclearTurns counts consecutive messages the NLU could not classify. The
 	// gateway asks for details on the first one and escalates to a human on the
 	// second, instead of bouncing the customer to the queue immediately.
-	UnclearTurns int       `json:"unclearTurns"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	UnclearTurns int `json:"unclearTurns"`
+	// PendingTool / PendingArgs / PendingSince describe a sensitive tool call
+	// waiting for the customer's confirmation. They are what the double check
+	// re-verifies before anything runs.
+	PendingTool  string            `json:"pendingTool,omitempty"`
+	PendingArgs  map[string]string `json:"pendingArgs,omitempty"`
+	PendingSince time.Time         `json:"pendingSince,omitempty"`
+	UpdatedAt    time.Time         `json:"updatedAt"`
 }

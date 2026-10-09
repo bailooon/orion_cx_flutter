@@ -25,7 +25,8 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 
 const conversationColumns = `id, user_id, customer_name, customer_document, plan_name,
 	intent, intent_confidence, summary, status, pending_action, assigned_agent,
-	has_unread_event, created_at, updated_at`
+	has_unread_event, created_at, updated_at, resolved_at,
+	satisfaction_score, satisfaction_comment, rated_at`
 
 func scanConversation(row pgx.Row) (domain.Conversation, error) {
 	var conversation domain.Conversation
@@ -35,6 +36,8 @@ func scanConversation(row pgx.Row) (domain.Conversation, error) {
 		&conversation.IntentConfidence, &conversation.Summary, &conversation.Status,
 		&conversation.PendingAction, &conversation.AssignedAgent,
 		&conversation.HasUnreadEvent, &conversation.CreatedAt, &conversation.UpdatedAt,
+		&conversation.ResolvedAt, &conversation.SatisfactionScore,
+		&conversation.SatisfactionComment, &conversation.RatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Conversation{}, httpx.ErrNotFound
@@ -47,12 +50,14 @@ func scanConversation(row pgx.Row) (domain.Conversation, error) {
 func (r *PostgresRepository) CreateConversation(ctx context.Context, conversation domain.Conversation) (domain.Conversation, error) {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO calls.conversations (`+conversationColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		conversation.ID, conversation.UserID, conversation.CustomerName,
 		conversation.CustomerDocument, conversation.PlanName, conversation.Intent,
 		conversation.IntentConfidence, conversation.Summary, conversation.Status,
 		conversation.PendingAction, conversation.AssignedAgent,
 		conversation.HasUnreadEvent, conversation.CreatedAt, conversation.UpdatedAt,
+		conversation.ResolvedAt, conversation.SatisfactionScore,
+		conversation.SatisfactionComment, conversation.RatedAt,
 	)
 	if err != nil {
 		return domain.Conversation{}, err
@@ -187,17 +192,18 @@ func (r *PostgresRepository) ApplyTurn(ctx context.Context, id string, turn Turn
 		}
 	}
 
-	applyTurnFields(&current, turn)
+	applyTurnFields(&current, turn, now)
 	current.UpdatedAt = now
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE calls.conversations
 		   SET intent = $2, intent_confidence = $3, summary = $4, status = $5,
 		       pending_action = $6, assigned_agent = $7, has_unread_event = $8,
-		       updated_at = $9
+		       updated_at = $9, resolved_at = $10
 		 WHERE id = $1`,
 		id, current.Intent, current.IntentConfidence, current.Summary, current.Status,
 		current.PendingAction, current.AssignedAgent, current.HasUnreadEvent, current.UpdatedAt,
+		current.ResolvedAt,
 	); err != nil {
 		return domain.Conversation{}, err
 	}
@@ -223,7 +229,8 @@ func (r *PostgresRepository) ResetConversation(ctx context.Context, id string) (
 		UPDATE calls.conversations
 		   SET intent = $2, intent_confidence = 0, summary = $3, status = 'bot',
 		       pending_action = NULL, assigned_agent = NULL, has_unread_event = FALSE,
-		       updated_at = now()
+		       resolved_at = NULL, satisfaction_score = NULL, satisfaction_comment = NULL,
+		       rated_at = NULL, updated_at = now()
 		 WHERE id = $1`, id, IntentUnclassified, SummaryNewSession)
 	if err != nil {
 		return domain.Conversation{}, err
@@ -235,6 +242,79 @@ func (r *PostgresRepository) ResetConversation(ctx context.Context, id string) (
 		return domain.Conversation{}, err
 	}
 	return r.GetConversation(ctx, id)
+}
+
+// RateConversation stores the satisfaction survey. The conditions live in the
+// WHERE clause so two concurrent answers cannot both be accepted.
+func (r *PostgresRepository) RateConversation(ctx context.Context, id string, score int, comment string) (domain.Conversation, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE calls.conversations
+		   SET satisfaction_score = $2, satisfaction_comment = $3, rated_at = now()
+		 WHERE id = $1 AND status = 'resolved' AND satisfaction_score IS NULL`,
+		id, score, comment)
+	if err != nil {
+		return domain.Conversation{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		current, err := r.GetConversation(ctx, id)
+		if err != nil {
+			return domain.Conversation{}, err
+		}
+		if current.Status != domain.StatusResolved {
+			return domain.Conversation{}, httpx.Conflict("A pesquisa só pode ser respondida depois que o atendimento for concluído.")
+		}
+		return domain.Conversation{}, httpx.Conflict("Este atendimento já foi avaliado.")
+	}
+	return r.GetConversation(ctx, id)
+}
+
+// RecordAudit appends AI audit entries in one transaction.
+func (r *PostgresRepository) RecordAudit(ctx context.Context, entries []domain.AuditEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, entry := range entries {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO calls.ai_audit (id, conversation_id, user_id, agent, kind, tool, status, detail, latency_ms, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			entry.ID, entry.ConversationID, entry.UserID, entry.Agent, entry.Kind, entry.Tool,
+			entry.Status, entry.Detail, entry.LatencyMs, entry.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// ListAudit returns entries newer than since, newest first.
+func (r *PostgresRepository) ListAudit(ctx context.Context, since time.Time, limit int) ([]domain.AuditEntry, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, conversation_id, user_id, agent, kind, tool, status, detail, latency_ms, created_at
+		  FROM calls.ai_audit
+		 WHERE created_at >= $1
+		 ORDER BY created_at DESC
+		 LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := make([]domain.AuditEntry, 0)
+	for rows.Next() {
+		var entry domain.AuditEntry
+		if err := rows.Scan(&entry.ID, &entry.ConversationID, &entry.UserID, &entry.Agent, &entry.Kind,
+			&entry.Tool, &entry.Status, &entry.Detail, &entry.LatencyMs, &entry.CreatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
 }
 
 // CountConversations reports the table size, used by the seeder.

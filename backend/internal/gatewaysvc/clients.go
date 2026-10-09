@@ -13,6 +13,7 @@ import (
 	"github.com/orion-cx/orion-backend/internal/domain"
 	"github.com/orion-cx/orion-backend/internal/nlpsvc"
 	"github.com/orion-cx/orion-backend/internal/platform/httpx"
+	"github.com/orion-cx/orion-backend/internal/platform/queue"
 )
 
 // authClient talks to ORION Authenticator.
@@ -65,6 +66,13 @@ func (c nlpClient) Classify(ctx context.Context, text string, hasPendingQuestion
 	result = c.local.Classify(text, hasPendingQuestion)
 	result.Engine = "rules-gateway-fallback"
 	return result
+}
+
+// Stats reads the NLU queue counters for the dashboard.
+func (c nlpClient) Stats(ctx context.Context) (queue.Stats, error) {
+	var stats queue.Stats
+	err := c.client.Do(ctx, "GET", "/v1/stats", nil, &stats)
+	return stats, err
 }
 
 // callClient talks to ORION Call Management.
@@ -151,6 +159,23 @@ func (c callClient) Tickets(ctx context.Context, userID string) ([]domain.Ticket
 	var tickets []domain.Ticket
 	err := c.client.Do(ctx, "GET", path, nil, &tickets)
 	return tickets, err
+}
+
+func (c callClient) Rate(ctx context.Context, id string, score int, comment string) (domain.Conversation, error) {
+	var conversation domain.Conversation
+	err := c.client.Do(ctx, "POST", "/v1/conversations/"+url.PathEscape(id)+"/survey",
+		map[string]any{"score": score, "comment": comment}, &conversation)
+	return conversation, err
+}
+
+func (c callClient) RecordAudit(ctx context.Context, entries []domain.AuditEntry) error {
+	return c.client.Do(ctx, "POST", "/v1/audit", entries, nil)
+}
+
+func (c callClient) Analytics(ctx context.Context) (callsvc.Analytics, error) {
+	var analytics callsvc.Analytics
+	err := c.client.Do(ctx, "GET", "/v1/analytics", nil, &analytics)
+	return analytics, err
 }
 
 func (c callClient) PurgeUser(ctx context.Context, userID string) error {

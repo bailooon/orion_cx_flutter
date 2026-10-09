@@ -4,6 +4,7 @@ import '../core/app_theme.dart';
 import '../core/models.dart';
 import '../core/orion_controller.dart';
 import '../widgets/common_widgets.dart';
+import '../widgets/satisfaction_survey.dart';
 
 class CustomerPortal extends StatefulWidget {
   const CustomerPortal({
@@ -876,6 +877,21 @@ class _CustomerActionArea extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (controller.messageError != null) {
+      return _ActionBox(
+        icon: Icons.error_outline_rounded,
+        title: 'Mensagem não enviada',
+        description: controller.messageError!,
+        accent: AppColors.claroRed,
+        actions: <Widget>[
+          OutlinedButton(
+            onPressed: controller.clearMessageError,
+            child: const Text('Entendi'),
+          ),
+        ],
+      );
+    }
+
     if (item.pendingAction == OrionController.restartAction) {
       return _ActionBox(
         icon: Icons.restart_alt_rounded,
@@ -917,6 +933,30 @@ class _CustomerActionArea extends StatelessWidget {
       );
     }
 
+    // Double check, first half: a change on the customer's account only
+    // happens after this explicit confirmation. The backend then re-verifies
+    // the request before executing it.
+    if (item.awaitsConfirmation) {
+      return _ActionBox(
+        icon: Icons.verified_user_outlined,
+        title: 'Confirmação necessária',
+        description:
+            'Por segurança, essa alteração só acontece com a sua confirmação.',
+        accent: AppColors.info,
+        actions: <Widget>[
+          FilledButton.icon(
+            onPressed: controller.confirmRestart,
+            icon: const Icon(Icons.check_rounded),
+            label: const Text('Confirmar'),
+          ),
+          OutlinedButton(
+            onPressed: controller.declineRestart,
+            child: const Text('Agora não'),
+          ),
+        ],
+      );
+    }
+
     if (item.status == SupportCaseStatus.waitingHuman) {
       return const _ActionBox(
         icon: Icons.hourglass_top_rounded,
@@ -939,11 +979,17 @@ class _CustomerActionArea extends StatelessWidget {
       );
     }
 
+    if (item.awaitsSurvey) {
+      return SatisfactionSurveyCard(controller: controller);
+    }
+
     if (item.status == SupportCaseStatus.resolved) {
       return _ActionBox(
         icon: Icons.check_circle_outline_rounded,
         title: 'Atendimento concluído',
-        description: 'O histórico e o contexto desta sessão foram salvos.',
+        description: item.satisfactionScore != null
+            ? 'Obrigado pela avaliação (${item.satisfactionScore}/5). O histórico desta sessão foi salvo.'
+            : 'O histórico e o contexto desta sessão foram salvos.',
         accent: AppColors.success,
         actions: <Widget>[
           OutlinedButton.icon(

@@ -19,6 +19,7 @@ type MemoryRepository struct {
 	mu            sync.RWMutex
 	conversations map[string]*domain.Conversation
 	tickets       map[string]*domain.Ticket
+	audit         []domain.AuditEntry
 }
 
 // NewMemoryRepository builds an empty repository.
@@ -127,14 +128,14 @@ func (r *MemoryRepository) ApplyTurn(_ context.Context, id string, turn Turn) (d
 			SentAt: now.Add(time.Duration(index) * time.Millisecond),
 		})
 	}
-	applyTurnFields(stored, turn)
+	applyTurnFields(stored, turn, now)
 	stored.UpdatedAt = now
 	return cloneConversation(stored), nil
 }
 
 // applyTurnFields copies the optional fields of a turn onto a conversation. It
 // is shared by both repositories so their semantics cannot drift.
-func applyTurnFields(target *domain.Conversation, turn Turn) {
+func applyTurnFields(target *domain.Conversation, turn Turn, now time.Time) {
 	if turn.Intent != nil {
 		target.Intent = *turn.Intent
 	}
@@ -145,6 +146,10 @@ func applyTurnFields(target *domain.Conversation, turn Turn) {
 		target.Summary = *turn.Summary
 	}
 	if turn.Status != nil {
+		if *turn.Status == domain.StatusResolved && target.ResolvedAt == nil {
+			resolvedAt := now
+			target.ResolvedAt = &resolvedAt
+		}
 		target.Status = *turn.Status
 	}
 	if turn.HasUnreadEvent != nil {
@@ -184,8 +189,62 @@ func (r *MemoryRepository) ResetConversation(_ context.Context, id string) (doma
 	stored.PendingAction = nil
 	stored.AssignedAgent = nil
 	stored.HasUnreadEvent = false
+	stored.ResolvedAt = nil
+	stored.SatisfactionScore = nil
+	stored.SatisfactionComment = nil
+	stored.RatedAt = nil
 	stored.UpdatedAt = time.Now().UTC()
 	return cloneConversation(stored), nil
+}
+
+// RateConversation stores the satisfaction survey.
+func (r *MemoryRepository) RateConversation(_ context.Context, id string, score int, comment string) (domain.Conversation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, ok := r.conversations[id]
+	if !ok {
+		return domain.Conversation{}, httpx.ErrNotFound
+	}
+	if stored.Status != domain.StatusResolved {
+		return domain.Conversation{}, httpx.Conflict("A pesquisa só pode ser respondida depois que o atendimento for concluído.")
+	}
+	if stored.SatisfactionScore != nil {
+		return domain.Conversation{}, httpx.Conflict("Este atendimento já foi avaliado.")
+	}
+	now := time.Now().UTC()
+	stored.SatisfactionScore = &score
+	stored.SatisfactionComment = &comment
+	stored.RatedAt = &now
+	return cloneConversation(stored), nil
+}
+
+// RecordAudit appends AI audit entries.
+func (r *MemoryRepository) RecordAudit(_ context.Context, entries []domain.AuditEntry) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.audit = append(r.audit, entries...)
+	// Bounded like a ring buffer: the in-memory backend must not grow forever.
+	if len(r.audit) > 5000 {
+		r.audit = append([]domain.AuditEntry(nil), r.audit[len(r.audit)-5000:]...)
+	}
+	return nil
+}
+
+// ListAudit returns entries newer than since, newest first.
+func (r *MemoryRepository) ListAudit(_ context.Context, since time.Time, limit int) ([]domain.AuditEntry, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]domain.AuditEntry, 0)
+	for index := len(r.audit) - 1; index >= 0; index-- {
+		if r.audit[index].CreatedAt.Before(since) {
+			continue
+		}
+		result = append(result, r.audit[index])
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
 }
 
 // CountConversations reports the table size, used by the seeder.

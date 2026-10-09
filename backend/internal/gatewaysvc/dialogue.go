@@ -3,6 +3,7 @@ package gatewaysvc
 import (
 	"strconv"
 
+	"github.com/orion-cx/orion-backend/internal/agents"
 	"github.com/orion-cx/orion-backend/internal/domain"
 	"github.com/orion-cx/orion-backend/internal/nlpsvc"
 )
@@ -31,11 +32,17 @@ type route struct {
 	// ticketTitle, when set, opens a protocol for this interaction.
 	ticketTitle string
 	ticketKind  string
+	// answer is "accept" or "decline" when the message answers a pending
+	// confirmation; the gateway then runs the double check.
+	answer string
+	// useAgent hands the turn to the specialised AI agent of the intent. The
+	// route's reply stays as the fallback if the agent is unavailable.
+	useAgent bool
 }
 
 // decide maps an NLU result plus the current state to a routing decision.
 func decide(result nlpsvc.Result, threshold float64, pendingAction string, unclearTurns int) route {
-	hasPending := pendingAction == domain.ActionRestartSignal || pendingAction == domain.ActionContinue
+	hasPending := agents.IsConfirmationAction(pendingAction)
 
 	// 1. Answers to a pending question are handled first: they are about the
 	//    action already on the table, not a new intent.
@@ -45,11 +52,13 @@ func decide(result nlpsvc.Result, threshold float64, pendingAction string, uncle
 			return route{
 				reply:    "Pronto! O sinal foi reiniciado. Aguarde cerca de 30 segundos e teste a conexão novamente.",
 				resolves: true,
+				answer:   "accept",
 			}
 		case nlpsvc.IntentNegative:
 			return route{
 				reply: "Sem problema, não fiz nenhuma alteração. Posso tentar outro diagnóstico " +
 					"ou encaminhar você para um atendente.",
+				answer: "decline",
 			}
 		}
 	}
@@ -96,6 +105,7 @@ func decide(result nlpsvc.Result, threshold float64, pendingAction string, uncle
 			pendingAction: domain.ActionRestartSignal,
 			ticketTitle:   "Diagnóstico de conexão",
 			ticketKind:    result.Intent,
+			useAgent:      true,
 		}
 	case nlpsvc.IntentInvoiceCopy:
 		return route{
@@ -104,24 +114,28 @@ func decide(result nlpsvc.Result, threshold float64, pendingAction string, uncle
 			resolves:    true,
 			ticketTitle: "Segunda via de fatura",
 			ticketKind:  result.Intent,
+			useAgent:    true,
 		}
 	case nlpsvc.IntentDataUsage:
 		return route{
 			reply: "Consultei seu plano: você utilizou 63% da franquia neste ciclo, com renovação " +
 				"no dia 28. Quer que eu ative o aviso de consumo em 80%?",
 			resolves: true,
+			useAgent: true,
 		}
 	case nlpsvc.IntentPlanUpgrade:
 		return route{
 			reply: "Posso te mostrar as opções de upgrade disponíveis para o seu endereço. " +
 				"Separei as ofertas na aba de recomendações do seu portal.",
 			resolves: true,
+			useAgent: true,
 		}
 	case nlpsvc.IntentTicketStatus:
 		return route{
 			reply: "Seus chamados e protocolos estão na aba Chamados do portal, com o histórico " +
 				"completo e o status atualizado em tempo real.",
 			resolves: true,
+			useAgent: true,
 		}
 	case nlpsvc.IntentGreeting:
 		return route{

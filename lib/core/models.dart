@@ -99,6 +99,8 @@ class SupportCase {
     this.pendingAction,
     this.assignedAgent,
     this.hasUnreadEvent = false,
+    this.satisfactionScore,
+    this.satisfactionComment,
   });
 
   factory SupportCase.fromJson(Map<String, dynamic> json) {
@@ -120,6 +122,8 @@ class SupportCase {
       pendingAction: json['pendingAction'] as String?,
       assignedAgent: json['assignedAgent'] as String?,
       hasUnreadEvent: json['hasUnreadEvent'] as bool? ?? false,
+      satisfactionScore: (json['satisfactionScore'] as num?)?.toInt(),
+      satisfactionComment: json['satisfactionComment'] as String?,
     );
   }
 
@@ -137,6 +141,18 @@ class SupportCase {
   String? pendingAction;
   String? assignedAgent;
   bool hasUnreadEvent;
+
+  /// Satisfaction survey answered after resolution (1 to 5), if any.
+  int? satisfactionScore;
+  String? satisfactionComment;
+
+  bool get awaitsSurvey =>
+      status == SupportCaseStatus.resolved && satisfactionScore == null;
+
+  /// True when a sensitive action waits for the customer's confirmation
+  /// (the first half of the double check).
+  bool get awaitsConfirmation =>
+      pendingAction != null && pendingAction!.startsWith('CONFIRM_');
 
   ChatMessage? get lastMessage => messages.isEmpty ? null : messages.last;
 

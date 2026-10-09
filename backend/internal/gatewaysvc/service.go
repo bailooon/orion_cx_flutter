@@ -3,9 +3,12 @@ package gatewaysvc
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/orion-cx/orion-backend/internal/agents"
 	"github.com/orion-cx/orion-backend/internal/callsvc"
 	"github.com/orion-cx/orion-backend/internal/config"
 	"github.com/orion-cx/orion-backend/internal/domain"
@@ -13,6 +16,7 @@ import (
 	"github.com/orion-cx/orion-backend/internal/platform/bus"
 	"github.com/orion-cx/orion-backend/internal/platform/cache"
 	"github.com/orion-cx/orion-backend/internal/platform/httpx"
+	"github.com/orion-cx/orion-backend/internal/platform/queue"
 	"github.com/orion-cx/orion-backend/internal/platform/security"
 	"github.com/orion-cx/orion-backend/internal/platform/wsx"
 )
@@ -33,6 +37,8 @@ type Service struct {
 	bus      bus.Bus
 	hub      *wsx.Hub
 	tokens   *security.Tokens
+	agents   *agents.Runtime
+	rate     *rateLimiter
 	logger   *slog.Logger
 
 	// alertMu guards the dashboard alert banner, which is presentation state
@@ -43,6 +49,7 @@ type Service struct {
 
 // NewService wires the gateway to its peers.
 func NewService(cfg config.Config, tokens *security.Tokens, sessions cache.SessionStore, eventBus bus.Bus, logger *slog.Logger) *Service {
+	cfg = withDefaults(cfg)
 	newClient := func(baseURL string) *httpx.Client {
 		return httpx.NewClient(baseURL, cfg.InternalTimeout, cfg.InternalRetries, logger)
 	}
@@ -59,6 +66,14 @@ func NewService(cfg config.Config, tokens *security.Tokens, sessions cache.Sessi
 		logger:       logger,
 		alertVisible: true,
 	}
+	// The AI agents sit behind their own queue so a traffic spike degrades
+	// answers instead of piling up model calls.
+	service.agents = agents.NewRuntime(
+		agents.NewToolbox(service.calls),
+		queue.New("agentes-ia", cfg.AgentMaxConcurrency, cfg.AgentMaxQueue, cfg.AgentQueueTimeout),
+		cfg.AnthropicAPIKey, cfg.AgentModel, cfg.AgentTimeout, logger,
+	)
+	service.rate = newRateLimiter(cfg.RateLimitPerMinute, cfg.RateLimitBurst)
 	service.hub.OnFirstFrame = func(client *wsx.Client) any {
 		snapshot, err := service.Snapshot(context.Background(), client.UserID, domain.Role(client.Role))
 		if err != nil {
@@ -174,6 +189,13 @@ func (s *Service) ActiveConversation(ctx context.Context, principal security.Pri
 		return conversation, nil
 	}
 
+	// Every conversation is closed: show the latest one, with its
+	// satisfaction survey, instead of opening an empty conversation on a mere
+	// page load. The customer's next message opens the new one.
+	if all, err := s.calls.List(ctx, principal.UserID); err == nil && len(all) > 0 {
+		return all[len(all)-1], nil
+	}
+
 	profile, err := s.auth.Profile(ctx, principal.UserID)
 	if err != nil {
 		return domain.Conversation{}, err
@@ -203,8 +225,9 @@ func (s *Service) ActiveConversation(ctx context.Context, principal security.Pri
 	return greeted, nil
 }
 
-// HandleCustomerMessage is the heart of the platform: it classifies, routes,
-// persists and announces one customer turn (RF004, RF005, RF008).
+// HandleCustomerMessage is the heart of the platform: it guards, classifies,
+// routes, runs the AI agent, persists and announces one customer turn
+// (RF004, RF005, RF008).
 func (s *Service) HandleCustomerMessage(ctx context.Context, principal security.Principal, conversationID, text string, channel domain.Channel) (domain.Conversation, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -214,6 +237,17 @@ func (s *Service) HandleCustomerMessage(ctx context.Context, principal security.
 		return domain.Conversation{}, httpx.BadRequest("Canal inválido.")
 	}
 
+	// Abuse protection runs before anything costs a database read or a model
+	// call.
+	if !s.rate.Allow(principal.UserID) {
+		s.record(ctx, auditEntry(domain.AuditRateLimited, principal, conversationID, "", "", "bloqueada", "limite de mensagens por minuto"))
+		return domain.Conversation{}, httpx.APIError{
+			Status:  http.StatusTooManyRequests,
+			Code:    "rate_limited",
+			Message: "Você enviou muitas mensagens em pouco tempo. Aguarde alguns segundos e tente de novo.",
+		}
+	}
+
 	conversation, err := s.calls.Get(ctx, conversationID)
 	if err != nil {
 		return domain.Conversation{}, err
@@ -221,6 +255,38 @@ func (s *Service) HandleCustomerMessage(ctx context.Context, principal security.
 	if conversation.UserID != principal.UserID && principal.Role != domain.RoleAgent {
 		return domain.Conversation{}, httpx.ErrForbidden
 	}
+
+	// A closed attendance is never reopened by the next message: a new
+	// conversation starts, and the closed one keeps its satisfaction survey.
+	if conversation.Status == domain.StatusResolved && conversation.UserID == principal.UserID {
+		fresh, err := s.openFreshConversation(ctx, principal, channel)
+		if err != nil {
+			return domain.Conversation{}, err
+		}
+		conversation = fresh
+		conversationID = fresh.ID
+	}
+
+	// Chatbot security: the message is inspected before any model or tool
+	// sees it.
+	verdict := agents.InspectInput(text)
+	if !verdict.Allowed {
+		s.record(ctx, auditEntry(domain.AuditSecurityBlock, principal, conversationID, "", "", "bloqueada", verdict.Reason))
+		// The payload itself is not stored: it would be fed back to the
+		// model as history on the next turn.
+		updated, err := s.calls.ApplyTurn(ctx, conversationID, callsvc.Turn{
+			Messages: []callsvc.MessageInput{
+				{Actor: domain.ActorCustomer, Text: "[mensagem bloqueada pela política de segurança]", Channel: channel},
+				{Actor: domain.ActorAssistant, Text: agents.BlockedReply, Channel: channel},
+			},
+		})
+		if err != nil {
+			return domain.Conversation{}, err
+		}
+		s.broadcastSnapshots(ctx)
+		return updated, nil
+	}
+	text = verdict.Text
 
 	// A human owns the conversation: record the message and raise the badge,
 	// but do not let the bot answer over the agent.
@@ -244,20 +310,41 @@ func (s *Service) HandleCustomerMessage(ctx context.Context, principal security.
 	}
 	session, _, _ := s.sessions.Get(ctx, principal.UserID)
 
-	classification := s.nlp.Classify(ctx, text,
-		pendingAction == domain.ActionRestartSignal || pendingAction == domain.ActionContinue)
+	classification := s.nlp.Classify(ctx, text, agents.IsConfirmationAction(pendingAction))
 	decision := decide(classification, s.cfg.ConfidenceThreshold, pendingAction, session.UnclearTurns)
+
+	var pending *pendingCall
+	switch {
+	case decision.answer == "accept":
+		// Double check: the "yes" is verified again server side before the
+		// sensitive tool runs.
+		result := s.confirmPending(ctx, principal, conversation)
+		decision.reply = result.reply
+		decision.resolves = result.resolves
+		decision.pendingAction = ""
+		decision.ticketTitle = result.ticketTitle
+		decision.ticketKind = conversation.Intent
+	case decision.answer == "decline":
+		s.record(ctx, auditEntry(domain.AuditConfirmDeclined, principal, conversationID, "",
+			agents.PendingToolFor(pendingAction), "recusada pelo cliente", ""))
+	case decision.useAgent && !decision.handoff:
+		pending = s.applyAgent(ctx, principal, conversation, text, channel, classification.Intent, &decision)
+	}
 
 	turn := callsvc.Turn{
 		Messages: []callsvc.MessageInput{
 			{Actor: domain.ActorCustomer, Text: text, Channel: channel},
 			{Actor: domain.ActorAssistant, Text: decision.reply, Channel: channel},
 		},
-		Intent:           &classification.Intent,
-		IntentConfidence: &classification.Confidence,
-		Summary:          &classification.Summary,
 		SetPendingAction: true,
 		PendingAction:    decision.pendingAction,
+	}
+	// An answer to a pending question keeps the conversation's original
+	// intent: "sim" is not what the customer came for.
+	if decision.answer == "" {
+		turn.Intent = &classification.Intent
+		turn.IntentConfidence = &classification.Confidence
+		turn.Summary = &classification.Summary
 	}
 
 	switch {
@@ -285,11 +372,15 @@ func (s *Service) HandleCustomerMessage(ctx context.Context, principal security.
 	// The protocol is opened after the turn is committed, so a ticket can never
 	// reference a conversation state that was rolled back.
 	if decision.ticketTitle != "" {
+		category := decision.ticketKind
+		if category == "" {
+			category = classification.Intent
+		}
 		if _, err := s.calls.OpenTicket(ctx, callsvc.TicketInput{
 			UserID:         updated.UserID,
 			ConversationID: updated.ID,
 			Title:          decision.ticketTitle,
-			Category:       decision.ticketKind,
+			Category:       category,
 			Status:         ticketStatusFor(updated.Status),
 			Channel:        channel,
 			FirstEvent:     "Chamado aberto pelo canal " + channel.Label() + ".",
@@ -319,11 +410,11 @@ func (s *Service) HandleCustomerMessage(ctx context.Context, principal security.
 
 	// Track consecutive unclear turns so the second one escalates.
 	unclear := session.UnclearTurns + 1
-	if decision.handoff || decision.pendingAction != "" || decision.resolves ||
+	if decision.handoff || decision.pendingAction != "" || decision.resolves || decision.answer != "" ||
 		(classification.Intent != nlpsvc.IntentUnknown && classification.Confidence >= s.cfg.ConfidenceThreshold) {
 		unclear = 0
 	}
-	s.saveSessionWithUnclear(ctx, principal.UserID, updated, channel, classification.Intent, unclear)
+	s.storeSession(ctx, principal.UserID, updated, channel, classification.Intent, unclear, pending)
 	s.broadcastSnapshots(ctx)
 	return updated, nil
 }
@@ -381,6 +472,16 @@ func (s *Service) SwitchChannel(ctx context.Context, principal security.Principa
 			Text:    "Encontrei uma ação pendente: reiniciar o sinal. Quer continuar por aqui?",
 			Channel: to,
 		})
+	case agents.PendingPlanChange:
+		prompt := s.agents.ConfirmationPrompt(principal, session.PendingTool, session.PendingArgs)
+		if prompt == "" {
+			prompt = "Há uma alteração de plano aguardando a sua confirmação."
+		}
+		turn.Messages = append(turn.Messages, callsvc.MessageInput{
+			Actor:   domain.ActorAssistant,
+			Text:    "Encontrei uma confirmação pendente. " + prompt,
+			Channel: to,
+		})
 	case domain.ActionHumanHandoff:
 		turn.Messages = append(turn.Messages, callsvc.MessageInput{
 			Actor:   domain.ActorAssistant,
@@ -427,24 +528,40 @@ func (s *Service) answerPendingAction(ctx context.Context, principal security.Pr
 	if conversation.PendingAction != nil {
 		pendingAction = *conversation.PendingAction
 	}
-	if pendingAction != domain.ActionRestartSignal && pendingAction != domain.ActionContinue {
+	if !agents.IsConfirmationAction(pendingAction) {
 		return conversation, nil
 	}
 	if !channel.Valid() {
 		channel = conversation.LastChannel()
 	}
+	tool := agents.PendingToolFor(pendingAction)
 
 	turn := callsvc.Turn{SetPendingAction: true}
+	var result confirmationResult
 	if accept {
-		summary := "Cliente relatou lentidão, autorizou o reinício do sinal e recebeu a confirmação da execução."
-		status := domain.StatusResolved
-		turn.Messages = []callsvc.MessageInput{
-			{Actor: domain.ActorCustomer, Text: "Sim, pode reiniciar.", Channel: channel},
-			{Actor: domain.ActorAssistant, Text: "Pronto! O sinal foi reiniciado. Aguarde cerca de 30 segundos e teste a conexão novamente.", Channel: channel},
+		customerText := "Sim, pode seguir."
+		switch tool {
+		case agents.ToolRestartSignal:
+			customerText = "Sim, pode reiniciar."
+		case agents.ToolChangePlan:
+			customerText = "Sim, confirmo a alteração do plano."
 		}
-		turn.Summary = &summary
-		turn.Status = &status
+		// Double check: confirmation plus server-side re-verification.
+		result = s.confirmPending(ctx, principal, conversation)
+		turn.Messages = []callsvc.MessageInput{
+			{Actor: domain.ActorCustomer, Text: customerText, Channel: channel},
+			{Actor: domain.ActorAssistant, Text: result.reply, Channel: channel},
+		}
+		if result.resolves {
+			status := domain.StatusResolved
+			turn.Status = &status
+			if tool == agents.ToolRestartSignal {
+				summary := "Cliente relatou lentidão, autorizou o reinício do sinal e recebeu a confirmação da execução."
+				turn.Summary = &summary
+			}
+		}
 	} else {
+		s.record(ctx, auditEntry(domain.AuditConfirmDeclined, principal, conversationID, "", tool, "recusada pelo cliente", ""))
 		turn.Messages = []callsvc.MessageInput{
 			{Actor: domain.ActorCustomer, Text: "Agora não.", Channel: channel},
 			{Actor: domain.ActorAssistant, Text: "Sem problema. A ação foi cancelada e o atendimento continua disponível.", Channel: channel},
@@ -455,34 +572,27 @@ func (s *Service) answerPendingAction(ctx context.Context, principal security.Pr
 	if err != nil {
 		return domain.Conversation{}, err
 	}
-	s.saveSession(ctx, principal.UserID, updated, channel, updated.Intent)
+	if accept && result.ticketTitle != "" {
+		if _, err := s.calls.OpenTicket(ctx, callsvc.TicketInput{
+			UserID:         updated.UserID,
+			ConversationID: updated.ID,
+			Title:          result.ticketTitle,
+			Category:       updated.Intent,
+			Status:         ticketStatusFor(updated.Status),
+			Channel:        channel,
+			FirstEvent:     "Ação confirmada pelo cliente no canal " + channel.Label() + ".",
+		}); err != nil {
+			s.logger.Warn("failed to open ticket", slog.String("err", err.Error()))
+		}
+	}
+	s.storeSession(ctx, principal.UserID, updated, channel, updated.Intent, 0, nil)
 	s.broadcastSnapshots(ctx)
 	return updated, nil
 }
 
 // saveSession stores the low-latency context used to resume a journey.
 func (s *Service) saveSession(ctx context.Context, userID string, conversation domain.Conversation, channel domain.Channel, intent string) {
-	s.saveSessionWithUnclear(ctx, userID, conversation, channel, intent, 0)
-}
-
-func (s *Service) saveSessionWithUnclear(ctx context.Context, userID string, conversation domain.Conversation, channel domain.Channel, intent string, unclearTurns int) {
-	pendingAction := ""
-	if conversation.PendingAction != nil {
-		pendingAction = *conversation.PendingAction
-	}
-	if err := s.sessions.Save(ctx, domain.SessionContext{
-		SessionID:      "SES-" + conversation.ID,
-		UserID:         userID,
-		ConversationID: conversation.ID,
-		LastChannel:    channel,
-		PendingAction:  pendingAction,
-		LastIntent:     intent,
-		UnclearTurns:   unclearTurns,
-	}); err != nil {
-		// The journey still works without the cache: ActiveConversation falls
-		// back to Call Management. Losing the context only costs a lookup.
-		s.logger.Warn("failed to persist session context", slog.String("err", err.Error()))
-	}
+	s.storeSession(ctx, userID, conversation, channel, intent, 0, nil)
 }
 
 func (s *Service) alertIsVisible() bool {
@@ -495,4 +605,31 @@ func (s *Service) setAlertVisible(visible bool) {
 	s.alertMu.Lock()
 	s.alertVisible = visible
 	s.alertMu.Unlock()
+}
+
+// withDefaults fills the agent knobs a hand-built config (tests, tools) may
+// leave at zero, so zero never means "reject everything".
+func withDefaults(cfg config.Config) config.Config {
+	if cfg.RateLimitPerMinute <= 0 {
+		cfg.RateLimitPerMinute = 30
+	}
+	if cfg.RateLimitBurst <= 0 {
+		cfg.RateLimitBurst = 10
+	}
+	if cfg.ConfirmationTTL <= 0 {
+		cfg.ConfirmationTTL = 15 * time.Minute
+	}
+	if cfg.AgentMaxConcurrency <= 0 {
+		cfg.AgentMaxConcurrency = 8
+	}
+	if cfg.AgentMaxQueue <= 0 {
+		cfg.AgentMaxQueue = 32
+	}
+	if cfg.AgentQueueTimeout <= 0 {
+		cfg.AgentQueueTimeout = 2 * time.Second
+	}
+	if cfg.AgentTimeout <= 0 {
+		cfg.AgentTimeout = 8 * time.Second
+	}
+	return cfg
 }

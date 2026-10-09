@@ -4,6 +4,7 @@ import '../core/app_theme.dart';
 import '../core/models.dart';
 import '../core/orion_controller.dart';
 import '../widgets/common_widgets.dart';
+import 'analytics_dashboard.dart';
 
 class AdminPortal extends StatefulWidget {
   const AdminPortal({
@@ -165,6 +166,16 @@ class _AdminPortalState extends State<AdminPortal> {
                     label: Text('Em atendimento'),
                   ),
                   NavigationRailDestination(
+                    icon: Icon(Icons.insights_outlined),
+                    selectedIcon: Icon(Icons.insights_rounded),
+                    label: Text('Indicadores'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.sentiment_satisfied_outlined),
+                    selectedIcon: Icon(Icons.sentiment_satisfied_alt_rounded),
+                    label: Text('Satisfação'),
+                  ),
+                  NavigationRailDestination(
                     icon: Icon(Icons.monitor_heart_outlined),
                     selectedIcon: Icon(Icons.monitor_heart_rounded),
                     label: Text('Monitoramento'),
@@ -204,6 +215,16 @@ class _AdminPortalState extends State<AdminPortal> {
                 label: 'Atendimentos',
               ),
               NavigationDestination(
+                icon: Icon(Icons.insights_outlined),
+                selectedIcon: Icon(Icons.insights_rounded),
+                label: 'Indicadores',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.sentiment_satisfied_outlined),
+                selectedIcon: Icon(Icons.sentiment_satisfied_alt_rounded),
+                label: 'CSAT',
+              ),
+              NavigationDestination(
                 icon: Icon(Icons.monitor_heart_outlined),
                 selectedIcon: Icon(Icons.monitor_heart_rounded),
                 label: 'Monitor',
@@ -239,6 +260,10 @@ class _AdminPortalState extends State<AdminPortal> {
           onSelectCase: _selectCase,
         );
       case 3:
+        return OperationsDashboardPage(controller: widget.controller);
+      case 4:
+        return SatisfactionDashboardPage(controller: widget.controller);
+      case 5:
         return _MonitoringPage(controller: widget.controller);
       default:
         return const SizedBox.shrink();

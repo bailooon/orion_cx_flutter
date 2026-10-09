@@ -66,6 +66,7 @@ func (s *Service) Routes() http.Handler {
 			private.Post("/cases/{id}/continue-here", s.handleConfirm)
 			private.Post("/cases/{id}/switch-channel", s.handleSwitchChannel)
 			private.Post("/cases/{id}/reset-conversation", s.handleResetConversation)
+			private.Post("/cases/{id}/survey", s.handleSurvey)
 
 			private.Get("/tickets", s.handleTickets)
 			private.Get("/recommendations", s.handleRecommendations)
@@ -82,6 +83,7 @@ func (s *Service) Routes() http.Handler {
 				agent.Post("/cases/{id}/resolve", s.handleResolve)
 				agent.Post("/cases/{id}/mark-read", s.handleMarkRead)
 				agent.Post("/dismiss-alert", s.handleDismissAlert)
+				agent.Get("/admin/dashboard", s.handleDashboard)
 			})
 		})
 	})
@@ -469,4 +471,37 @@ func channelParam(r *http.Request, fallback domain.Channel) domain.Channel {
 		return channel
 	}
 	return fallback
+}
+
+type surveyInput struct {
+	Score   int    `json:"score"`
+	Comment string `json:"comment"`
+}
+
+func (s *Service) handleSurvey(w http.ResponseWriter, r *http.Request) {
+	principal, err := principalOf(r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	var input surveyInput
+	if err := httpx.DecodeJSON(r, &input); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	conversation, err := s.SubmitSurvey(r.Context(), principal, chi.URLParam(r, "id"), input.Score, input.Comment)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, conversation)
+}
+
+func (s *Service) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	dashboard, err := s.Dashboard(r.Context())
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, dashboard)
 }

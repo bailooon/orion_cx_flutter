@@ -59,7 +59,7 @@ func (s *Service) handleEvent(ctx context.Context, event bus.Event) {
 		body = "Você recebeu uma resposta do atendente no protocolo " + event.ConversationID + "."
 	case bus.EventConversationResolved:
 		title = "Atendimento concluído"
-		body = "O protocolo " + event.ConversationID + " foi finalizado. O histórico continua disponível no seu portal."
+		body = "O protocolo " + event.ConversationID + " foi finalizado. Conte como foi: a pesquisa de satisfação leva 10 segundos e está no seu chat."
 	case bus.EventTicketCreated:
 		ticketTitle, _ := event.Payload["title"].(string)
 		title = "Chamado " + event.TicketID + " aberto"

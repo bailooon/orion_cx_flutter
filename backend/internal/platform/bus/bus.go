@@ -32,6 +32,7 @@ const (
 	EventAgentReplied            = "AGENT_REPLIED"
 	EventTicketCreated           = "TICKET_CREATED"
 	EventTicketUpdated           = "TICKET_UPDATED"
+	EventSurveySubmitted         = "SURVEY_SUBMITTED"
 )
 
 // Event is the envelope carried by the bus.

@@ -130,6 +130,71 @@ void main() {
     expect(find.textContaining('Débito automático'), findsWidgets);
   });
 
+  testWidgets('cliente responde a pesquisa de satisfação após a conclusão',
+      (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1440, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final _FakeOrionApi api =
+        _FakeOrionApi(role: 'customer', resolvedCase: true);
+    final OrionController controller = OrionController.withApi(api);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(OrionCxApp(controller: controller));
+    await tester.pump();
+    await tester.tap(find.text('Entrar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Entrar como cliente'));
+    await tester.pumpAndSettle();
+
+    expect(controller.customerCase.awaitsSurvey, isTrue);
+    expect(find.text('Atendimento concluído. Como foi a sua experiência?'),
+        findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.star_outline_rounded).at(4));
+    await tester.pump();
+    await tester.tap(find.text('Enviar avaliação'));
+    await tester.pumpAndSettle();
+
+    expect(api.submittedScore, 5);
+  });
+
+  testWidgets('atendente abre os dashboards de indicadores e satisfação',
+      (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1440, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final _FakeOrionApi api = _FakeOrionApi(role: 'agent');
+    final OrionController controller = OrionController.withApi(api);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(OrionCxApp(controller: controller));
+    await tester.pump();
+    await tester.tap(find.text('Entrar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Entrar como atendente'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Indicadores'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Indicadores da operação'), findsOneWidget);
+    expect(find.text('Automação pela IA'), findsOneWidget);
+    expect(find.text('Agentes de IA e fila'), findsOneWidget);
+
+    await tester.tap(find.text('Satisfação'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Satisfação do cliente'), findsOneWidget);
+    expect(find.text('IA × atendimento humano'), findsOneWidget);
+    expect(find.textContaining('Resolveu sem eu precisar repetir'),
+        findsOneWidget);
+
+    // Leave the dashboard so its refresh timer is cancelled.
+    await tester.tap(find.text('Fila'));
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('credenciais inválidas mostram o erro do backend',
       (WidgetTester tester) async {
     await tester.binding.setSurfaceSize(const Size(1440, 900));
@@ -291,10 +356,18 @@ Map<String, dynamic> _slowInternetSnapshot() {
 /// through a broadcast stream, matching just enough backend behaviour for the
 /// scenarios exercised in these widget tests.
 class _FakeOrionApi implements OrionApi {
-  _FakeOrionApi({required this.role, this.failLogin = false});
+  _FakeOrionApi({
+    required this.role,
+    this.failLogin = false,
+    this.resolvedCase = false,
+  });
 
   final String role;
   final bool failLogin;
+
+  /// Serves the customer's conversation already resolved and unrated, so the
+  /// satisfaction survey shows up.
+  final bool resolvedCase;
 
   final StreamController<Map<String, dynamic>> _controller =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -335,7 +408,13 @@ class _FakeOrionApi implements OrionApi {
 
   @override
   Future<Map<String, dynamic>> loadState(UserChannel channel) async {
-    return _snapshotFor(role);
+    final Map<String, dynamic> snapshot = _snapshotFor(role);
+    if (resolvedCase) {
+      final Map<String, dynamic> item =
+          (snapshot['cases'] as List<dynamic>).first as Map<String, dynamic>;
+      item['status'] = 'resolved';
+    }
+    return snapshot;
   }
 
   @override
@@ -405,8 +484,125 @@ class _FakeOrionApi implements OrionApi {
   @override
   Future<void> forgetMe() async {}
 
+  int? submittedScore;
+
+  @override
+  Future<void> submitSurvey(String caseId, int score, String comment) async {
+    submittedScore = score;
+  }
+
+  @override
+  Future<Map<String, dynamic>> loadDashboard() async => _dashboardPayload();
+
   @override
   void dispose() {
     _controller.close();
   }
+}
+
+Map<String, dynamic> _dashboardPayload() {
+  return <String, dynamic>{
+    'engine': 'plano-deterministico',
+    'analytics': <String, dynamic>{
+      'conversations': <String, dynamic>{
+        'total': 6,
+        'bot': 1,
+        'waitingHuman': 1,
+        'inProgress': 1,
+        'resolved': 3,
+      },
+      'automationRate': 66.67,
+      'handoffRate': 33.33,
+      'avgConfidence': 0.81,
+      'avgHandlingMinutes': 4.2,
+      'crossChannelRate': 16.67,
+      'intents': <dynamic>[
+        <String, dynamic>{'key': 'SUPORTE_TECNICO', 'count': 3},
+      ],
+      'channels': <dynamic>[
+        <String, dynamic>{'key': 'whatsapp', 'count': 2},
+      ],
+      'tickets': <String, dynamic>{'open': 1, 'inProgress': 1, 'resolved': 2},
+      'satisfaction': <String, dynamic>{
+        'responses': 3,
+        'responseRate': 100,
+        'average': 4,
+        'csat': 66.67,
+        'npsLike': 0,
+        'distribution': <int>[0, 0, 1, 1, 1],
+        'byResolver': <dynamic>[
+          <String, dynamic>{
+            'key': 'ia',
+            'responses': 2,
+            'average': 4.5,
+            'csat': 100,
+          },
+          <String, dynamic>{
+            'key': 'humano',
+            'responses': 1,
+            'average': 3,
+            'csat': 0,
+          },
+        ],
+        'byIntent': <dynamic>[],
+        'byAgent': <dynamic>[],
+        'byChannel': <dynamic>[],
+        'daily': <dynamic>[
+          <String, dynamic>{
+            'day': '2026-10-08',
+            'responses': 3,
+            'average': 4,
+            'resolved': 3,
+          },
+        ],
+        'recent': <dynamic>[
+          <String, dynamic>{
+            'conversationId': 'CX-2026-0128',
+            'customer': 'Paula',
+            'score': 5,
+            'comment': 'Resolveu sem eu precisar repetir nada.',
+            'resolvedBy': 'ia',
+            'agent': 'Assistente Orion (IA)',
+            'intent': 'SUPORTE_TECNICO',
+          },
+        ],
+      },
+      'ai': <String, dynamic>{
+        'toolCalls': 4,
+        'securityBlocks': 1,
+        'confirmationsRequested': 2,
+        'confirmationsAccepted': 1,
+        'byTool': <dynamic>[
+          <String, dynamic>{'key': 'diagnosticar_conexao', 'count': 2},
+        ],
+        'byAgent': <dynamic>[],
+        'recent': <dynamic>[
+          <String, dynamic>{
+            'kind': 'security_block',
+            'status': 'bloqueada',
+            'detail': 'tentativa_de_injecao_de_prompt',
+            'createdAt': '2026-10-08T12:00:00Z',
+          },
+        ],
+      },
+    },
+    'queues': <String, dynamic>{
+      'agents': <String, dynamic>{'capacity': 8, 'maxQueue': 32, 'processed': 4},
+      'nlu': <String, dynamic>{'capacity': 8, 'maxQueue': 32, 'processed': 6},
+    },
+    'agents': <dynamic>[
+      <String, dynamic>{
+        'id': 'agente_suporte_tecnico',
+        'name': 'Agente de Suporte Técnico',
+        'tools': <String>['diagnosticar_conexao', 'reiniciar_sinal'],
+      },
+    ],
+    'security': <String, dynamic>{
+      'rateLimitPerMinute': 30,
+      'maxInputChars': 1000,
+      'maxToolCallsPerTurn': 5,
+      'confirmationTtlMinutes': 15,
+      'confidenceThreshold': 0.7,
+    },
+  };
 }
