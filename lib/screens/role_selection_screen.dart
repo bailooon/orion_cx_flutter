@@ -5,6 +5,7 @@ import '../core/orion_controller.dart';
 import '../widgets/common_widgets.dart';
 import 'admin_portal.dart';
 import 'customer_portal.dart';
+import 'tickets_screen.dart';
 
 class RoleSelectionScreen extends StatelessWidget {
   const RoleSelectionScreen({
@@ -90,7 +91,7 @@ class _HeroPanel extends StatelessWidget {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.08),
+                      color: Colors.white.withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(color: Colors.white24),
                     ),
@@ -171,6 +172,9 @@ class _RolePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool isAgent = controller.isAgent;
+    final String userName = controller.user?.shortName ?? '';
+
     return Container(
       color: AppColors.canvas,
       constraints: const BoxConstraints(minHeight: 520),
@@ -184,60 +188,102 @@ class _RolePanel extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  Text(
-                    'Escolha a experiência',
-                    style: Theme.of(context).textTheme.headlineMedium,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          isAgent ? 'Área de atendimento' : 'Escolha a experiência',
+                          style: Theme.of(context).textTheme.headlineMedium,
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: controller.logout,
+                        icon: const Icon(Icons.logout_rounded, size: 18),
+                        label: const Text('Sair'),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    'As duas áreas compartilham o mesmo estado em memória. Assim, uma solicitação feita pelo cliente aparece imediatamente na fila administrativa.',
+                    userName.isEmpty
+                        ? 'Sessão autenticada na plataforma Orion CX.'
+                        : 'Olá, $userName. Sua sessão vale em qualquer canal: '
+                            'o que começa no WhatsApp continua no App ou no Web Portal.',
                     style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                           color: AppColors.muted,
                         ),
                   ),
                   const SizedBox(height: 28),
-                  _RoleCard(
-                    icon: Icons.phone_iphone_rounded,
-                    title: 'Área do cliente',
-                    subtitle:
-                        'Abra um atendimento, teste internet lenta, altere o canal e solicite ajuda para uma cobrança.',
-                    tags: const <String>[
-                      'Chat',
-                      'Continuidade',
-                      'Sessões',
-                    ],
-                    actionLabel: 'Entrar como cliente',
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (BuildContext context) =>
-                              CustomerPortal(controller: controller),
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  _RoleCard(
-                    icon: Icons.space_dashboard_outlined,
-                    title: 'Dashboard administrativo',
-                    subtitle:
-                        'Monitore a fila, assuma atendimentos, consulte o resumo da IA e responda ao cliente.',
-                    tags: const <String>[
-                      'Fila em tempo real',
-                      'Resumo da IA',
-                      'Resposta manual',
-                    ],
-                    actionLabel: 'Entrar como atendente',
-                    emphasized: true,
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (BuildContext context) =>
-                              AdminPortal(controller: controller),
-                        ),
-                      );
-                    },
-                  ),
+                  // The available areas follow the role of the authenticated
+                  // account: the dashboard is not merely hidden from customers,
+                  // its endpoints reject them (403).
+                  if (!isAgent) ...<Widget>[
+                    _RoleCard(
+                      icon: Icons.phone_iphone_rounded,
+                      title: 'Área do cliente',
+                      subtitle:
+                          'Abra um atendimento, teste internet lenta, altere o canal e solicite ajuda para uma cobrança.',
+                      tags: const <String>[
+                        'Chat',
+                        'Continuidade',
+                        'Sessões',
+                      ],
+                      actionLabel: 'Entrar como cliente',
+                      emphasized: true,
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (BuildContext context) =>
+                                CustomerPortal(controller: controller),
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    _RoleCard(
+                      icon: Icons.confirmation_number_outlined,
+                      title: 'Meus chamados e avisos',
+                      subtitle:
+                          'Acompanhe os protocolos abertos, o histórico de cada canal, as notificações e as ofertas sugeridas para você.',
+                      tags: const <String>[
+                        'Protocolos',
+                        'Notificações',
+                        'Recomendações',
+                      ],
+                      actionLabel: 'Abrir meus chamados',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (BuildContext context) =>
+                                TicketsScreen(controller: controller),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                  if (isAgent)
+                    _RoleCard(
+                      icon: Icons.space_dashboard_outlined,
+                      title: 'Dashboard administrativo',
+                      subtitle:
+                          'Monitore a fila, assuma atendimentos, consulte o resumo da IA e responda ao cliente.',
+                      tags: const <String>[
+                        'Fila em tempo real',
+                        'Resumo da IA',
+                        'Resposta manual',
+                      ],
+                      actionLabel: 'Entrar como atendente',
+                      emphasized: true,
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (BuildContext context) =>
+                                AdminPortal(controller: controller),
+                          ),
+                        );
+                      },
+                    ),
                   const SizedBox(height: 22),
                   SurfaceCard(
                     color: const Color(0xFFFFF7F7),
@@ -253,7 +299,7 @@ class _RolePanel extends StatelessWidget {
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
-                            'Este projeto usa dados simulados e não envia informações para serviços externos. Os pontos de integração estão documentados no README.',
+                            'Os dados são fictícios, mas trafegam de verdade pelos microsserviços Orion e pelo banco. Arquitetura e requisitos estão em ARQUITETURA.md e FUNCIONALIDADES.md.',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
@@ -390,7 +436,7 @@ class _DarkFeature extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.07),
+        color: Colors.white.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.white12),
       ),
@@ -419,10 +465,10 @@ class _ArchitecturePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final Paint linePaint = Paint()
-      ..color = Colors.white.withOpacity(0.055)
+      ..color = Colors.white.withValues(alpha: 0.055)
       ..strokeWidth = 1;
     final Paint nodePaint = Paint()
-      ..color = AppColors.claroRed.withOpacity(0.32)
+      ..color = AppColors.claroRed.withValues(alpha: 0.32)
       ..style = PaintingStyle.fill;
 
     final List<Offset> nodes = <Offset>[
@@ -450,7 +496,7 @@ class _ArchitecturePainter extends CustomPainter {
         node,
         11,
         Paint()
-          ..color = Colors.white.withOpacity(0.035)
+          ..color = Colors.white.withValues(alpha: 0.035)
           ..style = PaintingStyle.fill,
       );
     }

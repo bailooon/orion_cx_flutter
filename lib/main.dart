@@ -5,5 +5,5 @@ import 'core/orion_controller.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(OrionCxApp(controller: OrionController.demo()));
+  runApp(OrionCxApp(controller: OrionController.connect()));
 }

@@ -4,6 +4,7 @@ import '../core/app_theme.dart';
 import '../core/models.dart';
 import '../core/orion_controller.dart';
 import '../widgets/common_widgets.dart';
+import '../widgets/satisfaction_survey.dart';
 
 class CustomerPortal extends StatefulWidget {
   const CustomerPortal({
@@ -182,7 +183,7 @@ class _CustomerHomeTab extends StatelessWidget {
                             width: 230,
                             padding: const EdgeInsets.all(18),
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.10),
+                              color: Colors.white.withValues(alpha: 0.10),
                               borderRadius: BorderRadius.circular(20),
                               border: Border.all(color: Colors.white24),
                             ),
@@ -409,7 +410,7 @@ class _QuickSupportCard extends StatelessWidget {
             width: 50,
             height: 50,
             decoration: BoxDecoration(
-              color: accent.withOpacity(0.10),
+              color: accent.withValues(alpha: 0.10),
               borderRadius: BorderRadius.circular(16),
             ),
             child: Icon(icon, color: accent),
@@ -876,6 +877,21 @@ class _CustomerActionArea extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (controller.messageError != null) {
+      return _ActionBox(
+        icon: Icons.error_outline_rounded,
+        title: 'Mensagem não enviada',
+        description: controller.messageError!,
+        accent: AppColors.claroRed,
+        actions: <Widget>[
+          OutlinedButton(
+            onPressed: controller.clearMessageError,
+            child: const Text('Entendi'),
+          ),
+        ],
+      );
+    }
+
     if (item.pendingAction == OrionController.restartAction) {
       return _ActionBox(
         icon: Icons.restart_alt_rounded,
@@ -917,6 +933,30 @@ class _CustomerActionArea extends StatelessWidget {
       );
     }
 
+    // Double check, first half: a change on the customer's account only
+    // happens after this explicit confirmation. The backend then re-verifies
+    // the request before executing it.
+    if (item.awaitsConfirmation) {
+      return _ActionBox(
+        icon: Icons.verified_user_outlined,
+        title: 'Confirmação necessária',
+        description:
+            'Por segurança, essa alteração só acontece com a sua confirmação.',
+        accent: AppColors.info,
+        actions: <Widget>[
+          FilledButton.icon(
+            onPressed: controller.confirmRestart,
+            icon: const Icon(Icons.check_rounded),
+            label: const Text('Confirmar'),
+          ),
+          OutlinedButton(
+            onPressed: controller.declineRestart,
+            child: const Text('Agora não'),
+          ),
+        ],
+      );
+    }
+
     if (item.status == SupportCaseStatus.waitingHuman) {
       return const _ActionBox(
         icon: Icons.hourglass_top_rounded,
@@ -939,11 +979,17 @@ class _CustomerActionArea extends StatelessWidget {
       );
     }
 
+    if (item.awaitsSurvey) {
+      return SatisfactionSurveyCard(controller: controller);
+    }
+
     if (item.status == SupportCaseStatus.resolved) {
       return _ActionBox(
         icon: Icons.check_circle_outline_rounded,
         title: 'Atendimento concluído',
-        description: 'O histórico e o contexto desta sessão foram salvos.',
+        description: item.satisfactionScore != null
+            ? 'Obrigado pela avaliação (${item.satisfactionScore}/5). O histórico desta sessão foi salvo.'
+            : 'O histórico e o contexto desta sessão foram salvos.',
         accent: AppColors.success,
         actions: <Widget>[
           OutlinedButton.icon(
@@ -1006,9 +1052,9 @@ class _ActionBox extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(12, 4, 12, 10),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: accent.withOpacity(0.07),
+        color: accent.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: accent.withOpacity(0.25)),
+        border: Border.all(color: accent.withValues(alpha: 0.25)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
